@@ -1,3 +1,10 @@
+## [0.62.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.3...v0.62.4) (2026-09-27)
+
+
+### Bug Fixes
+
+* **dashboard:** give MCP Servers its own rail page as the MCP Hub ([#275](https://github.com/bestagentkits/cloud-harness-mcp/issues/275)) ([393101a](https://github.com/bestagentkits/cloud-harness-mcp/commit/393101a8dfc7c264538e839d160efddbad70e812))
+
 ## [0.62.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.2...v0.62.3) (2026-09-27)
 
 
