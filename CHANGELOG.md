@@ -1,3 +1,10 @@
+## [0.62.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.2...v0.62.3) (2026-09-27)
+
+
+### Bug Fixes
+
+* **dashboard:** let the top bar and rail follow the light theme ([#274](https://github.com/bestagentkits/cloud-harness-mcp/issues/274)) ([ae9840c](https://github.com/bestagentkits/cloud-harness-mcp/commit/ae9840c5299edf9c13e064aa0a825b54cc448543))
+
 ## [0.62.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.1...v0.62.2) (2026-09-26)
 
 
