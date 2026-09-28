@@ -1,3 +1,10 @@
+## [0.62.7](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.6...v0.62.7) (2026-09-28)
+
+
+### Bug Fixes
+
+* allow skill archive uploads through nginx ([#280](https://github.com/bestagentkits/cloud-harness-mcp/issues/280)) ([a16cd7d](https://github.com/bestagentkits/cloud-harness-mcp/commit/a16cd7dbd0cfc2f8256ac5a78c805a8d75b3f477))
+
 ## [0.62.6](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.5...v0.62.6) (2026-09-28)
 
 
