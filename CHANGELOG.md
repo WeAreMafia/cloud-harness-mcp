@@ -1,3 +1,10 @@
+## [0.62.5](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.4...v0.62.5) (2026-09-28)
+
+
+### Bug Fixes
+
+* **dashboard:** prevent navigation rate-limit exhaustion ([a2b1253](https://github.com/bestagentkits/cloud-harness-mcp/commit/a2b12534dbeaf5fdd348c3110f542d81ea08bf65))
+
 ## [0.62.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.3...v0.62.4) (2026-09-27)
 
 
