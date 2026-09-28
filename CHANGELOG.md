@@ -1,3 +1,10 @@
+## [0.62.6](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.5...v0.62.6) (2026-09-28)
+
+
+### Bug Fixes
+
+* **dashboard:** handle failed workspace cockpit state ([#277](https://github.com/bestagentkits/cloud-harness-mcp/issues/277)) ([9317b2d](https://github.com/bestagentkits/cloud-harness-mcp/commit/9317b2d79a6a156227edff0224bba25e7887730c))
+
 ## [0.62.5](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.4...v0.62.5) (2026-09-28)
 
 
