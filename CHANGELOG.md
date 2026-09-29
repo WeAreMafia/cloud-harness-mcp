@@ -1,3 +1,10 @@
+## [0.62.8](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.7...v0.62.8) (2026-09-29)
+
+
+### Bug Fixes
+
+* **dashboard:** let skill zip archives upload end to end ([#281](https://github.com/bestagentkits/cloud-harness-mcp/issues/281)) ([ba5e8f8](https://github.com/bestagentkits/cloud-harness-mcp/commit/ba5e8f8b6307050628e06ad0d51fe57420bb7da7))
+
 ## [0.62.7](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.6...v0.62.7) (2026-09-28)
 
 
