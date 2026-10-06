@@ -196,8 +196,12 @@ export function bearerAuth(
         rejectOAuth(response, config, 'invalid_token');
         return;
       }
+      const verificationData = verification.data as { clientId?: string; scope?: string; resource?: string } | undefined;
+      const tokenScopes = typeof verificationData?.scope === 'string' && verificationData.scope.trim().length > 0
+        ? verificationData.scope.trim().split(/\s+/).filter(Boolean)
+        : [];
       const principal: RunnerPrincipalSelector = { kind: 'owner', ownerId: config.ownerId };
-      request.auth = { token, clientId: config.ownerId, scopes, extra: { principal } };
+      request.auth = { token, clientId: config.ownerId, scopes: tokenScopes, extra: { principal } };
       next();
       return;
     }

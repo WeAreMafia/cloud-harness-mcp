@@ -73,6 +73,9 @@ describe('owner-oauth auth mode', () => {
     } as any;
 
     runtime = createApiApp(config, { runnerClient: fakeRunnerClient });
+    runtime.app.get('/mcp/scopes-probe', (req: any, res) => {
+      res.json({ scopes: req.auth?.scopes, clientId: req.auth?.clientId });
+    });
     server = createServer(runtime.app);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
@@ -802,5 +805,178 @@ describe('owner-oauth auth mode', () => {
       })
     });
     expect(successRes.status).toBe(200);
+  });
+
+  // 21. Scope validation at /oauth/authorize and propagation into request.auth.scopes
+  it('21. validates requested scopes at /oauth/authorize and propagates granted scopes to request.auth.scopes', async () => {
+    const { challenge: c1 } = createPkce();
+
+    // 21a. Unsupported scope at GET /oauth/authorize is rejected
+    const getBadScope = await fetch(
+      `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(allowedCallback)}&state=s1&code_challenge=${c1}&code_challenge_method=S256&scope=admin`,
+      { headers: { host: 'codex-mcp.iamsoftware.com.vn' } }
+    );
+    expect(getBadScope.status).toBe(400);
+    const getBadText = await getBadScope.text();
+    expect(getBadText).toContain('invalid_scope');
+
+    // 21b. Unsupported scope at POST /oauth/authorize is rejected
+    const postBadScope = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: 'POST',
+      headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: allowedCallback,
+        state: 's1',
+        code_challenge: c1,
+        code_challenge_method: 'S256',
+        scope: 'workspace:read evil:scope',
+        password: ownerPassword
+      }).toString()
+    });
+    expect(postBadScope.status).toBe(400);
+    const postBadText = await postBadScope.text();
+    expect(postBadText).toContain('invalid_scope');
+
+    // 21c. Supported scopes survive authorization -> token issuance -> token verification
+    // Request specifically 'workspace:read workspace:execute' (excluding 'workspace:write')
+    const { verifier, challenge } = createPkce();
+    const pageRes = await fetch(
+      `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(allowedCallback)}&state=s2&code_challenge=${challenge}&code_challenge_method=S256&scope=${encodeURIComponent('workspace:read workspace:execute')}`,
+      { headers: { host: 'codex-mcp.iamsoftware.com.vn' } }
+    );
+    expect(pageRes.status).toBe(200);
+    const html = await pageRes.text();
+    const csrfToken = html.match(/name="csrf_token" value="([^"]+)"/)![1];
+
+    const postRes = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: 'POST', redirect: 'manual',
+      headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId, redirect_uri: allowedCallback, state: 's2',
+        code_challenge: challenge, code_challenge_method: 'S256',
+        scope: 'workspace:read workspace:execute',
+        csrf_token: csrfToken, password: ownerPassword
+      }).toString()
+    });
+    expect(postRes.status).toBe(302);
+    const code = new URL(postRes.headers.get('location')!).searchParams.get('code')!;
+
+    // Token exchange
+    const tokenRes = await fetch(`${baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId, client_secret: clientSecret,
+        grant_type: 'authorization_code', code,
+        redirect_uri: allowedCallback, code_verifier: verifier
+      }).toString()
+    });
+    expect(tokenRes.status).toBe(200);
+    const tokenData = await tokenRes.json();
+    expect(tokenData.scope).toBe('workspace:read workspace:execute');
+
+    // Call probe endpoint through bearerAuth
+    const probeRes = await fetch(`${baseUrl}/mcp/scopes-probe`, {
+      headers: {
+        host: 'codex-mcp.iamsoftware.com.vn',
+        authorization: `Bearer ${tokenData.access_token}`
+      }
+    });
+    expect(probeRes.status).toBe(200);
+    const probeData = await probeRes.json();
+
+    // Verify request.auth.scopes reflects the scopes actually granted to the OAuth token
+    expect(probeData.scopes).toEqual(['workspace:read', 'workspace:execute']);
+    expect(probeData.scopes).not.toContain('workspace:write');
+    expect(probeData.scopes).not.toEqual(['workspace:read', 'workspace:write', 'workspace:execute']);
+  });
+
+  // 22. Strictly validates RFC 8707 resource parameter
+  it('22. strictly validates RFC 8707 resource parameter at /oauth/authorize and /oauth/token', async () => {
+    const { challenge: c1 } = createPkce();
+
+    // 22a. Omitted resource defaults to MCP resource on GET /oauth/authorize
+    const getOmitted = await fetch(
+      `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(allowedCallback)}&state=s1&code_challenge=${c1}&code_challenge_method=S256`,
+      { headers: { host: 'codex-mcp.iamsoftware.com.vn' } }
+    );
+    expect(getOmitted.status).toBe(200);
+    const htmlOmitted = await getOmitted.text();
+    expect(htmlOmitted).toContain(resourceUri);
+    const csrfOmitted = htmlOmitted.match(/name="csrf_token" value="([^"]+)"/)![1];
+
+    // 22b. Omitted resource defaults to MCP resource on POST /oauth/authorize
+    const postOmitted = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: 'POST', redirect: 'manual',
+      headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId, redirect_uri: allowedCallback, state: 's1',
+        code_challenge: c1, code_challenge_method: 'S256',
+        csrf_token: csrfOmitted, password: ownerPassword
+      }).toString()
+    });
+    expect(postOmitted.status).toBe(302);
+
+    // 22c. Exact MCP resource is accepted on GET and POST /oauth/authorize
+    const { challenge: c2 } = createPkce();
+    const getExact = await fetch(
+      `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(allowedCallback)}&state=s2&code_challenge=${c2}&code_challenge_method=S256&resource=${encodeURIComponent(resourceUri)}`,
+      { headers: { host: 'codex-mcp.iamsoftware.com.vn' } }
+    );
+    expect(getExact.status).toBe(200);
+    const htmlExact = await getExact.text();
+    expect(htmlExact).toContain(resourceUri);
+    const csrfExact = htmlExact.match(/name="csrf_token" value="([^"]+)"/)![1];
+
+    const postExact = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: 'POST', redirect: 'manual',
+      headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId, redirect_uri: allowedCallback, state: 's2',
+        code_challenge: c2, code_challenge_method: 'S256',
+        resource: resourceUri,
+        csrf_token: csrfExact, password: ownerPassword
+      }).toString()
+    });
+    expect(postExact.status).toBe(302);
+
+    // 22d. Any other resource is rejected on GET /oauth/authorize
+    const { challenge: c3 } = createPkce();
+    const getForeign = await fetch(
+      `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(allowedCallback)}&state=s3&code_challenge=${c3}&code_challenge_method=S256&resource=https://evil.example.com/mcp`,
+      { headers: { host: 'codex-mcp.iamsoftware.com.vn' } }
+    );
+    expect(getForeign.status).toBe(400);
+    expect(await getForeign.text()).toContain('Invalid resource parameter');
+
+    // 22e. Any other resource is rejected on POST /oauth/authorize
+    const postForeign = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: 'POST', redirect: 'manual',
+      headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId, redirect_uri: allowedCallback, state: 's3',
+        code_challenge: c3, code_challenge_method: 'S256',
+        resource: 'https://evil.example.com/mcp',
+        csrf_token: csrfExact, password: ownerPassword
+      }).toString()
+    });
+    expect(postForeign.status).toBe(400);
+    expect(await postForeign.text()).toContain('Invalid resource parameter');
+
+    // 22f. Any other resource on POST /oauth/token is rejected with invalid_target
+    const tokenForeign = await fetch(`${baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId, client_secret: clientSecret,
+        grant_type: 'authorization_code', code: 'dummy-code',
+        redirect_uri: allowedCallback, code_verifier: 'some-verifier-123456789012345678901234567890',
+        resource: 'https://evil.example.com/mcp'
+      }).toString()
+    });
+    expect(tokenForeign.status).toBe(400);
+    const tokenForeignBody = await tokenForeign.json();
+    expect(tokenForeignBody.error).toBe('invalid_target');
   });
 });

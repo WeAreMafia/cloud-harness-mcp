@@ -257,6 +257,36 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#039;');
 }
 
+function validateResource(rawResource: unknown, expectedResource: string): { valid: true; resource: string } | { valid: false } {
+  if (rawResource === undefined || rawResource === '') {
+    return { valid: true, resource: expectedResource };
+  }
+  if (typeof rawResource === 'string' && rawResource === expectedResource) {
+    return { valid: true, resource: rawResource };
+  }
+  return { valid: false };
+}
+
+function validateScopes(rawScope: unknown, supported: readonly string[]): { valid: true; scope: string } | { valid: false; error: string } {
+  if (rawScope === undefined || rawScope === '') {
+    return { valid: true, scope: supported.join(' ') };
+  }
+  if (typeof rawScope !== 'string') {
+    return { valid: false, error: 'Invalid scope parameter' };
+  }
+  const requested = rawScope.trim().split(/\s+/).filter(Boolean);
+  if (requested.length === 0) {
+    return { valid: true, scope: supported.join(' ') };
+  }
+  for (const s of requested) {
+    if (!supported.includes(s)) {
+      return { valid: false, error: `invalid_scope: unsupported scope "${s}"` };
+    }
+  }
+  const unique = Array.from(new Set(requested));
+  return { valid: true, scope: unique.join(' ') };
+}
+
 export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient): Router {
   const router = express.Router();
   const issuer = config.oauthIssuer ?? `https://${config.publicHosts[0]}`;
@@ -315,8 +345,6 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
     const state = typeof req.query.state === 'string' ? req.query.state : '';
     const codeChallenge = typeof req.query.code_challenge === 'string' ? req.query.code_challenge : '';
     const codeChallengeMethod = typeof req.query.code_challenge_method === 'string' ? req.query.code_challenge_method : '';
-    const resource = typeof req.query.resource === 'string' ? req.query.resource : resourceUri;
-    const scope = typeof req.query.scope === 'string' ? req.query.scope : supportedScopes.join(' ');
 
     if (!clientId || clientId !== config.oauthClientId) {
       res.status(400).type('text/plain').send('Invalid client_id');
@@ -344,6 +372,22 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
       return;
     }
 
+    // Resource validation (RFC 8707)
+    const resourceResult = validateResource(req.query.resource, resourceUri);
+    if (!resourceResult.valid) {
+      res.status(400).type('text/plain').send('Invalid resource parameter');
+      return;
+    }
+    const resource = resourceResult.resource;
+
+    // Scope validation
+    const scopeResult = validateScopes(req.query.scope, supportedScopes);
+    if (!scopeResult.valid) {
+      res.status(400).type('text/plain').send(scopeResult.error);
+      return;
+    }
+    const scope = scopeResult.scope;
+
     const csrfToken = generateCsrfToken(clientId, codeChallenge, config.oauthClientSecret!);
     const html = renderLoginPage({
       issuer,
@@ -369,8 +413,6 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
     const state = typeof req.body.state === 'string' ? req.body.state : '';
     const codeChallenge = typeof req.body.code_challenge === 'string' ? req.body.code_challenge : '';
     const codeChallengeMethod = typeof req.body.code_challenge_method === 'string' ? req.body.code_challenge_method : '';
-    const resource = typeof req.body.resource === 'string' ? req.body.resource : resourceUri;
-    const scope = typeof req.body.scope === 'string' ? req.body.scope : supportedScopes.join(' ');
     const csrfToken = typeof req.body.csrf_token === 'string' ? req.body.csrf_token : '';
     const password = typeof req.body.password === 'string' ? req.body.password : '';
 
@@ -379,6 +421,27 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
       res.status(400).type('text/plain').send('Invalid authorization request parameters');
       return;
     }
+
+    if (codeChallengeMethod !== 'S256' || !codeChallenge || codeChallenge.length < 43 || codeChallenge.length > 128) {
+      res.status(400).type('text/plain').send('Invalid code_challenge or code_challenge_method; S256 required');
+      return;
+    }
+
+    // Resource validation (RFC 8707)
+    const resourceResult = validateResource(req.body.resource, resourceUri);
+    if (!resourceResult.valid) {
+      res.status(400).type('text/plain').send('Invalid resource parameter');
+      return;
+    }
+    const resource = resourceResult.resource;
+
+    // Scope validation
+    const scopeResult = validateScopes(req.body.scope, supportedScopes);
+    if (!scopeResult.valid) {
+      res.status(400).type('text/plain').send(scopeResult.error);
+      return;
+    }
+    const scope = scopeResult.scope;
 
     if (!checkRateLimit(ip)) {
       res.status(429).type('text/plain').send('Too many login attempts. Please try again later.');
@@ -487,6 +550,12 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
           return;
         }
 
+        const resourceResult = validateResource(req.body.resource, resourceUri);
+        if (!resourceResult.valid) {
+          res.status(400).json({ error: 'invalid_target', error_description: 'Invalid resource parameter' });
+          return;
+        }
+
         const codeHash = sha256Hex(code);
         const accessToken = randomBytes(32).toString('base64url');
         const refreshToken = randomBytes(32).toString('base64url');
@@ -517,7 +586,7 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
           token_type: 'Bearer',
           expires_in: config.oauthAccessTokenTtlSeconds ?? 900,
           refresh_token: refreshToken,
-          scope: data?.scope ?? supportedScopes.join(' ')
+          scope: typeof data?.scope === 'string' && data.scope.length > 0 ? data.scope : supportedScopes.join(' ')
         });
         return;
       }
@@ -526,6 +595,12 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
         const refreshToken = typeof req.body.refresh_token === 'string' ? req.body.refresh_token : '';
         if (!refreshToken) {
           res.status(400).json({ error: 'invalid_request', error_description: 'Missing refresh_token' });
+          return;
+        }
+
+        const resourceResult = validateResource(req.body.resource, resourceUri);
+        if (!resourceResult.valid) {
+          res.status(400).json({ error: 'invalid_target', error_description: 'Invalid resource parameter' });
           return;
         }
 
@@ -556,7 +631,7 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
           token_type: 'Bearer',
           expires_in: config.oauthAccessTokenTtlSeconds ?? 900,
           refresh_token: newRefreshToken,
-          scope: data?.scope ?? supportedScopes.join(' ')
+          scope: typeof data?.scope === 'string' && data.scope.length > 0 ? data.scope : supportedScopes.join(' ')
         });
         return;
       }
