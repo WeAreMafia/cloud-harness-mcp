@@ -202,6 +202,28 @@ command = "node"
 args = ["/path/to/cloud-harness-mcp/apps/api/dist/index.js", "--transport", "stdio", "--workspace", "/path/to/my-project"]
 ```
 
+#### ChatGPT Web (OAuth 2.1 — `owner-oauth`)
+
+To connect ChatGPT Web directly to your Cloud Harness MCP server as a custom MCP server:
+
+1. Configure `.env` on your server:
+   ```bash
+   AUTH_MODE=owner-oauth
+   OAUTH_ISSUER=https://codex-mcp.iamsoftware.com.vn
+   OAUTH_CLIENT_ID=chatgpt-client-id
+   OAUTH_CLIENT_SECRET=<generated-32+-char-secret>
+   OAUTH_OWNER_PASSWORD=<strong-owner-password>
+   OAUTH_ALLOWED_REDIRECT_URIS=https://chatgpt.com/connector/oauth/<unique-id>
+   ```
+2. In ChatGPT Web, navigate to **Settings -> Connected apps -> Create custom MCP server**:
+   - **Server URL**: `https://codex-mcp.iamsoftware.com.vn/mcp`
+   - **Authentication**: `OAuth`
+   - **Client ID**: The value configured in `OAUTH_CLIENT_ID`
+   - **Client Secret**: The value configured in `OAUTH_CLIENT_SECRET`
+   - **Token Endpoint Authentication**: `client_secret_post` (or `client_secret_basic`)
+   - Copy the displayed **Callback URL** (e.g. `https://chatgpt.com/connector/oauth/...`) and ensure it matches `OAUTH_ALLOWED_REDIRECT_URIS`.
+3. Click connect. ChatGPT Web redirects your browser to `/oauth/authorize`. Enter `OAUTH_OWNER_PASSWORD` to approve access.
+
 ## MCP tools
 
 The public tool names are owned by

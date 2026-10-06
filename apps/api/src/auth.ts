@@ -1,10 +1,20 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import type { AuthInfo } from '@modelcontextprotocol/server';
-import { RunnerPrincipalSelectorSchema, type ApiConfig, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import {
+  RunnerPrincipalSelectorSchema,
+  type ApiConfig,
+  type OAuthInternalRequest,
+  type OAuthInternalResponse,
+  type RunnerPrincipalSelector
+} from '@cloud-harness/contracts';
 import { AccessJwtVerificationError, CloudflareAccessJwtVerifier, type AccessJwtVerifierOptions } from './access-jwt-verifier.js';
 import { renderAccessDiagnostic, type AccessDiagnosticReason } from './access-diagnostic.js';
 import { apiLogger } from './logging.js';
+
+export type OAuthTokenVerifier = {
+  callOAuth(request: OAuthInternalRequest): Promise<OAuthInternalResponse>;
+};
 
 type ApiKeyAuthenticator = {
   authenticateApiKey(apiKey: string): Promise<
@@ -32,6 +42,14 @@ function reject(response: Response): void {
   response.setHeader('WWW-Authenticate', 'Bearer realm="cloud-harness-mcp"');
   response.status(401).json({ error: 'authentication_failed' });
 }
+
+function rejectOAuth(response: Response, config: ApiConfig, error?: string): void {
+  const metadataUrl = `${config.oauthIssuer}/.well-known/oauth-protected-resource`;
+  const errorParam = error ? `, error="${error}"` : '';
+  response.setHeader('WWW-Authenticate', `Bearer realm="cloud-harness-mcp"${errorParam}, resource_metadata="${metadataUrl}"`);
+  response.status(401).json({ error: error ?? 'unauthorized' });
+}
+
 
 function verificationReason(error: unknown): AccessDiagnosticReason {
   return error instanceof AccessJwtVerificationError ? error.reason : 'unexpected_verification_error';
@@ -142,12 +160,48 @@ export function accessAssertionAuth(config: ApiConfig, verifierOptions: Verifier
   };
 }
 
-export function bearerAuth(config: ApiConfig, verifierOptions: VerifierOverrides = {}) {
+export function bearerAuth(
+  config: ApiConfig,
+  verifierOrOAuth?: VerifierOverrides | OAuthTokenVerifier,
+  maybeVerifierOptions: VerifierOverrides = {}
+) {
+  const oauthClient = verifierOrOAuth && 'callOAuth' in verifierOrOAuth ? verifierOrOAuth : undefined;
+  const verifierOptions = oauthClient ? maybeVerifierOptions : (verifierOrOAuth as VerifierOverrides ?? {});
   const verifier = accessVerifier(config, verifierOptions);
   let activeVerifications = 0;
   return async (request: AuthenticatedRequest, response: Response, next: NextFunction): Promise<void> => {
     const authorization = request.header('authorization') ?? '';
     const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+
+    if (config.authMode === 'owner-oauth') {
+      if (!token) {
+        rejectOAuth(response, config);
+        return;
+      }
+      if (equal(token, config.oauthClientSecret) || equal(token, config.oauthOwnerPassword)) {
+        rejectOAuth(response, config, 'invalid_token');
+        return;
+      }
+      if (!oauthClient) {
+        rejectOAuth(response, config, 'invalid_token');
+        return;
+      }
+      const tokenHash = createHash('sha256').update(token, 'utf8').digest('hex');
+      const verification = await oauthClient.callOAuth({
+        action: 'verify_access_token',
+        accessTokenHash: tokenHash,
+        expectedResource: `${config.oauthIssuer}/mcp`
+      });
+      if (!verification.ok) {
+        rejectOAuth(response, config, 'invalid_token');
+        return;
+      }
+      const principal: RunnerPrincipalSelector = { kind: 'owner', ownerId: config.ownerId };
+      request.auth = { token, clientId: config.ownerId, scopes, extra: { principal } };
+      next();
+      return;
+    }
+
     if (!verifier) {
       if (!token || !equal(token, config.bearerToken)) {
         reject(response);
@@ -158,6 +212,7 @@ export function bearerAuth(config: ApiConfig, verifierOptions: VerifierOverrides
       next();
       return;
     }
+
     if (token.startsWith('chm_key_')) {
       reject(response);
       return;

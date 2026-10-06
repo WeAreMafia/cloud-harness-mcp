@@ -1,20 +1,27 @@
 import express, { type Express, type Request, type Response } from 'express';
 import pino from 'pino';
 import { ZodError } from 'zod';
-import { HarnessError, RunnerRequestSchema, type RunnerConfig } from '@cloud-harness/contracts';
+import { HarnessError, OAuthInternalRequestSchema, RunnerRequestSchema, type RunnerConfig } from '@cloud-harness/contracts';
 import { serviceAuth } from './security.js';
 import { executeInternalRunnerOperation } from './internal-runner-operations.js';
 import { runnerRequestPrincipal } from './runner-request-principal.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { DashboardControlService } from './dashboard-control-service.js';
 import type { ApiKeyService } from './api-key-service.js';
+import type { OAuthStore } from './oauth-store.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info', redact: ['req.headers.authorization', 'authorization', '*.token', '*.content', '*.command'] });
 
 /** Holds the base64 form of an 8 MiB skills archive plus the operation envelope around it. */
 const DASHBOARD_OPERATION_BODY_LIMIT = '12mb';
 
-export function createRunnerApp(config: RunnerConfig, service: WorkspaceService, controls?: DashboardControlService, apiKeys?: ApiKeyService): Express {
+export function createRunnerApp(
+  config: RunnerConfig,
+  service: WorkspaceService,
+  controls?: DashboardControlService,
+  apiKeys?: ApiKeyService,
+  oauthStore?: OAuthStore
+): Express {
   const app = express();
   app.disable('x-powered-by');
   // A skills archive travels to the runner as base64 in this one route's envelope (up to ~10.7 MiB), so it
@@ -63,8 +70,22 @@ export function createRunnerApp(config: RunnerConfig, service: WorkspaceService,
       sendRunnerError(response, error);
     }
   });
+  app.post('/v1/internal/oauth', serviceAuth(config.serviceToken), (request: Request, response: Response) => {
+    if (!oauthStore) {
+      response.status(503).json({ ok: false, error: 'OAuth service unavailable' });
+      return;
+    }
+    const parsed = OAuthInternalRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({ ok: false, error: 'invalid_request' });
+      return;
+    }
+    const result = oauthStore.handle(parsed.data);
+    response.status(result.ok ? 200 : 400).json(result);
+  });
   return app;
 }
+
 
 function sendRunnerError(response: Response, error: unknown): void {
   if (error instanceof HarnessError) {

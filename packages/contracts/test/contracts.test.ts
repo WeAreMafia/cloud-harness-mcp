@@ -62,6 +62,44 @@ describe('contracts', () => {
     expect(() => ApiConfigSchema.parse({ ...access, bearerToken: 'owner-token-that-is-long-enough-123456' })).toThrow();
   });
 
+  it('accepts complete owner-oauth configuration and rejects partial or mixed settings', () => {
+    const oauthConfig = {
+      ...commonApiConfig,
+      authMode: 'owner-oauth' as const,
+      oauthIssuer: 'https://codex-mcp.iamsoftware.com.vn',
+      oauthClientId: 'chatgpt-client',
+      oauthClientSecret: 'secret-token-that-is-longer-than-32-chars-123',
+      oauthOwnerPassword: 'strong-password-123',
+      oauthAllowedRedirectUris: ['https://chatgpt.com/connector/oauth/callback']
+    };
+    const parsed = ApiConfigSchema.parse(oauthConfig);
+    expect(parsed.authMode).toBe('owner-oauth');
+    expect(parsed.oauthAccessTokenTtlSeconds).toBe(900);
+    expect(parsed.oauthRefreshTokenTtlSeconds).toBe(2592000);
+
+    // bearerToken is tolerated for rollback ease
+    expect(ApiConfigSchema.parse({ ...oauthConfig, bearerToken: 'bearer-token-longer-than-32-chars-12345' }).authMode).toBe('owner-oauth');
+
+    // Missing required fields throws
+    expect(() => ApiConfigSchema.parse({ ...oauthConfig, oauthIssuer: undefined })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...oauthConfig, oauthClientId: undefined })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...oauthConfig, oauthClientSecret: undefined })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...oauthConfig, oauthOwnerPassword: undefined })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...oauthConfig, oauthAllowedRedirectUris: [] })).toThrow();
+
+    // Mixed with Cloudflare Access throws
+    expect(() => ApiConfigSchema.parse({ ...oauthConfig, accessIssuer: 'https://team.cloudflareaccess.com' })).toThrow();
+
+    // OAuth settings forbidden in owner-bearer mode
+    expect(() => ApiConfigSchema.parse({
+      ...commonApiConfig,
+      authMode: 'owner-bearer' as const,
+      bearerToken: 'owner-token-that-is-long-enough-123456',
+      oauthIssuer: 'https://codex-mcp.iamsoftware.com.vn'
+    })).toThrow();
+  });
+
+
   it('enables the API-key gateway only with a separate complete Access audience', () => {
     const access = {
       ...commonApiConfig, authMode: 'cloudflare-access' as const,

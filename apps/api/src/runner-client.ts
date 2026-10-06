@@ -8,12 +8,15 @@ import {
   ApiKeyManagementResponseSchema,
   RunnerRequestSchema,
   RunnerResponseSchema,
+  OAuthInternalResponseSchema,
   type ApiConfig,
   type ApiKeyAuthenticationResponse,
   type ApiKeyManagementOperation,
   type ApiKeyManagementResponse,
   type InternalRunnerOperation,
   type MetadataRunnerOperation,
+  type OAuthInternalRequest,
+  type OAuthInternalResponse,
   type RunnerOperation,
   type RunnerPrincipalSelector,
   type RunnerResponse
@@ -53,6 +56,14 @@ export class RunnerClient {
       ok: false, error: 'authentication_failed'
     }));
   }
+
+  async callOAuth(request: OAuthInternalRequest): Promise<OAuthInternalResponse> {
+    return await this.requestJson('/v1/internal/oauth', request, OAuthInternalResponseSchema, (error) => ({
+      ok: false,
+      error: error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'runner_unavailable'
+    }));
+  }
+
 
   private async request(
     path: string,

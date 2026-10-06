@@ -6,6 +6,7 @@ import type { ApiConfig } from '@cloud-harness/contracts';
 import { accessAssertionAuth, apiKeyGatewayAuth, bearerAuth } from './auth.js';
 import { createDashboardAssetsRouter } from './dashboard-assets.js';
 import { createDashboardRouter } from './dashboard-router.js';
+import { createOAuthRouter } from './oauth-router.js';
 import { createCloudHarnessServerFactory } from './mcp-server.js';
 import { createMcpGateway } from './mcp-gateway/index.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
@@ -41,7 +42,7 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
     const ready = await runnerClient.ready();
     response.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'unavailable' });
   });
-  app.use('/mcp', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config), principalRequestLimits());
+  app.use('/mcp', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config, runnerClient), principalRequestLimits());
   app.use('/mcp', express.json({ limit: config.maxBodyBytes, strict: true }));
   app.all('/mcp', async (request: Request, response: Response) => {
     if (request.method === 'POST' && !request.is('application/json')) {
@@ -52,7 +53,7 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
   });
   // Express `app.use('/mcp', ...)` does not match `/mcp-gateway` (the next character
   // must be `/` or end), so the two chains cannot interfere.
-  app.use('/mcp-gateway', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config), principalRequestLimits());
+  app.use('/mcp-gateway', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config, runnerClient), principalRequestLimits());
   app.use('/mcp-gateway', express.json({ limit: config.maxBodyBytes, strict: true }));
   app.all('/mcp-gateway', async (request: Request, response: Response) => {
     if (request.method === 'POST' && !request.is('application/json')) {
@@ -61,6 +62,10 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
     }
     await gatewayNodeHandler(request, response, request.body);
   });
+  if (config.authMode === 'owner-oauth') {
+    app.use(createOAuthRouter(config, runnerClient));
+  }
+
   if (config.authMode === 'cloudflare-access' && config.apiKeyAuthEnabled) {
     app.use('/mcp-api-key', requestSecurity(config), preAuthRequestLimits(), apiKeyGatewayAuth(config, runnerClient), principalRequestLimits());
     app.use('/mcp-api-key', express.json({ limit: config.maxBodyBytes, strict: true }));

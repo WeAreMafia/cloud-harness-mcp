@@ -15,6 +15,7 @@ import { StateStore } from './state-store.js';
 import { WorkspaceService } from './workspace-service.js';
 import { DockerAgentGatewayControl } from './agent-gateway-control.js';
 import { ModelProfileStateRepository } from './model-profile-state-repository.js';
+import { OAuthStore } from './oauth-store.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const loaded = loadRunnerConfigWithReadiness();
@@ -49,11 +50,12 @@ const gatewayControl = config.agents ? new DockerAgentGatewayControl() : undefin
 const modelProfiles = keyring ? new ModelProfileStateRepository(store.database, keyring) : undefined;
 const service = new WorkspaceService(config, store, metadata, githubInstallations, githubBinding, artifacts, { modelProfiles, ...(gatewayControl !== undefined ? { gateway: gatewayControl } : {}) });
 const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding, modelProfiles, gatewayControl, keyring);
+const oauthStore = new OAuthStore(store.database);
 // A job row outlives the process that wrote it, so startup is where an import interrupted by a restart is
 // turned into a terminal state rather than left as a spinner that never ends.
 controls.reconcileInterruptedImports();
 await service.start();
-const server = createServer(createRunnerApp(config, service, controls, apiKeys));
+const server = createServer(createRunnerApp(config, service, controls, apiKeys, oauthStore));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));
 
 async function shutdown(signal: string) {

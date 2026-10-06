@@ -28,11 +28,37 @@ inventory.
 
 - `owner-bearer` is the default. `MCP_BEARER_TOKEN` authenticates the one
   configured `OWNER_ID`, and the browser dashboard is disabled.
+- `owner-oauth` enables self-hosted single-owner OAuth 2.1 Authorization Code
+  flow with mandatory PKCE (`S256`) for AI clients like ChatGPT Web. Pre-registers
+  a static client (`OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET`), validates exact
+  redirect URIs (`OAUTH_ALLOWED_REDIRECT_URIS`), authenticates the owner at
+  `/oauth/authorize` via `OAUTH_OWNER_PASSWORD`, provides standard metadata
+  discovery (RFC 8414 and RFC 9728), issues revocable access tokens with refresh
+  token rotation, and stores all token state in durable runner SQLite.
+  `MCP_BEARER_TOKEN` may be optionally retained in `.env` for zero-downtime rollback.
 - `cloudflare-access` trusts only a verified Cloudflare Access assertion for
   identity. Configure the issuer, application audience, and JWKS URL from the
   same Access application, remove the owner bearer, and protect both `/mcp`
   and `/dashboard` at the Access edge. GitHub and Google are Access identity
   providers; Cloud Harness does not integrate their login tokens directly.
+
+### Single-owner OAuth 2.1 (ChatGPT Web)
+
+When `AUTH_MODE=owner-oauth`, the API server operates as both the OAuth 2.1
+Authorization Server and the MCP Resource Server:
+
+- `OAUTH_ISSUER`: canonical issuer base URL (e.g. `https://codex-mcp.iamsoftware.com.vn`),
+  matching the HTTPS hostname accessed by ChatGPT.
+- `OAUTH_CLIENT_ID`: static client identifier registered in ChatGPT Web.
+- `OAUTH_CLIENT_SECRET`: static client secret registered in ChatGPT Web (at least 32 characters).
+- `OAUTH_OWNER_PASSWORD`: strong owner authentication password entered into the
+  server-rendered login form when authorizing access.
+- `OAUTH_ALLOWED_REDIRECT_URIS`: comma-separated exact redirect URI allowlist,
+  typically ChatGPT's callback URL (e.g. `https://chatgpt.com/connector/oauth/<unique-id>`).
+  Wildcards and localhost redirects in production are forbidden.
+- `OAUTH_ACCESS_TOKEN_TTL_SECONDS`: access token lifespan (default: 900 seconds / 15 minutes).
+- `OAUTH_REFRESH_TOKEN_TTL_SECONDS`: refresh token lifespan (default: 2,592,000 seconds / 30 days).
+
 
 The exact required/forbidden combinations are owned by
 [`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts).

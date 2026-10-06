@@ -12,10 +12,38 @@ The current operator deployment has two Streamable HTTP endpoints:
 The lanes are intentionally non-interchangeable. Managed keys are accepted
 only through the fixed Worker gateway; the hidden origin path is not a client
 endpoint. `owner-bearer` remains the default authentication contract for
-separate private deployments. The
-recommended client routes are in the
+separate private deployments, and `owner-oauth` provides self-hosted OAuth 2.1
+support for ChatGPT Web. The recommended client routes are in the
 [README](../README.md#connect-from-ai-clients). Do not treat implementation or
 configuration as proof that a specific client has completed live OAuth.
+
+### Self-hosted OAuth 2.1 mode (ChatGPT Web)
+
+When `AUTH_MODE=owner-oauth`, the server natively acts as both an OAuth 2.1
+Authorization Server and the MCP Resource Server at `/mcp`:
+
+- **Protected Resource Metadata (RFC 9728)**:
+  `GET /.well-known/oauth-protected-resource` and alias `/.well-known/oauth-protected-resource/mcp`.
+  Points clients to the resource identifier and authorization server issuer.
+- **Authorization Server Metadata (RFC 8414)**:
+  `GET /.well-known/oauth-authorization-server`.
+  Advertises `code` response type, `authorization_code` and `refresh_token` grants,
+  PKCE code challenge method `S256`, and token endpoint authentication methods
+  `client_secret_post` and `client_secret_basic`.
+- **Authorization Endpoint**:
+  `GET /oauth/authorize` displays a server-rendered owner login form.
+  After authenticating with `OAUTH_OWNER_PASSWORD` over HTTPS POST (protected by CSRF token and brute-force throttling),
+  a single-use authorization code is issued and redirects to the pre-registered redirect URI
+  with `code`, `state`, and `iss` parameters (RFC 9207).
+- **Token Endpoint**:
+  `POST /oauth/token` validates client credentials via HTTP Basic or POST body, validates PKCE `code_verifier`,
+  and returns opaque access and refresh tokens. Supports refresh token rotation and token family replay revocation.
+- **MCP Resource Protection**:
+  Unauthenticated requests to `/mcp` receive `401 Unauthorized` with:
+  `WWW-Authenticate: Bearer realm="cloud-harness-mcp", resource_metadata="<issuer>/.well-known/oauth-protected-resource"`
+  Authenticated requests require `Authorization: Bearer <access_token>`. OAUTH_CLIENT_SECRET and
+  OAUTH_OWNER_PASSWORD are never accepted as bearer tokens.
+
 
 The canonical public tool names are the `RunnerOperationSchema` values in
 [`packages/contracts/src/runner-api.ts`](../packages/contracts/src/runner-api.ts).

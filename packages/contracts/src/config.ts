@@ -130,9 +130,16 @@ export const RunnerAgentsConfigSchema = z.object({
 export const ApiConfigSchema = z.object({
   host: z.string().default('0.0.0.0'),
   port: z.coerce.number().int().min(1).max(65_535).default(3000),
-  authMode: z.enum(['owner-bearer', 'cloudflare-access']).optional(),
+  authMode: z.enum(['owner-bearer', 'cloudflare-access', 'owner-oauth']).optional(),
   ownerId: z.string().min(1).max(100).default('owner'),
   bearerToken: token.optional(),
+  oauthIssuer: httpsUrl.optional(),
+  oauthClientId: z.string().min(1).max(256).optional(),
+  oauthClientSecret: token.optional(),
+  oauthOwnerPassword: z.string().min(8).max(512).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden').optional(),
+  oauthAllowedRedirectUris: z.array(httpsUrl).min(1).optional(),
+  oauthAccessTokenTtlSeconds: z.coerce.number().int().min(60).max(86_400).default(900),
+  oauthRefreshTokenTtlSeconds: z.coerce.number().int().min(300).max(31_536_000).default(2_592_000),
   accessIssuer: httpsUrl.optional(),
   accessAudience: z.string().min(1).max(512).optional(),
   accessJwksUrl: httpsUrl.optional(),
@@ -159,14 +166,36 @@ export const ApiConfigSchema = z.object({
   const mode = config.authMode ?? 'owner-bearer';
   const accessValues = [config.accessIssuer, config.accessAudience, config.accessJwksUrl];
   const apiKeyValues = [config.apiKeyGatewayAccessAudience, config.apiKeyGatewayServiceSubject, config.apiKeyGatewayPublicUrl];
+  const oauthValues = [config.oauthIssuer, config.oauthClientId, config.oauthClientSecret, config.oauthOwnerPassword, config.oauthAllowedRedirectUris];
   if (mode === 'owner-bearer') {
     if (!config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'bearer token is required in owner-bearer mode' });
     if (accessValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['authMode'], message: 'Cloudflare Access settings are forbidden in owner-bearer mode' });
+    if (oauthValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['authMode'], message: 'OAuth settings are forbidden in owner-bearer mode' });
     if (config.apiKeyAuthEnabled || apiKeyValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway is only valid in cloudflare-access mode' });
     if (config.mcpGatewayAllowInsecureHttp && !config.mcpGatewayAllowPrivateEndpoints) {
       context.addIssue({ code: 'custom', path: ['mcpGatewayAllowInsecureHttp'], message: 'cleartext http MCP gateway endpoints require private endpoint opt-in' });
     }
     return;
+  }
+  if (mode === 'owner-oauth') {
+    if (accessValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['authMode'], message: 'Cloudflare Access settings are forbidden in owner-oauth mode' });
+    if (config.apiKeyAuthEnabled || apiKeyValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway is only valid in cloudflare-access mode' });
+    for (const [path, value] of [
+      ['oauthIssuer', config.oauthIssuer],
+      ['oauthClientId', config.oauthClientId],
+      ['oauthClientSecret', config.oauthClientSecret],
+      ['oauthOwnerPassword', config.oauthOwnerPassword],
+      ['oauthAllowedRedirectUris', config.oauthAllowedRedirectUris]
+    ] as const) {
+      if (!value) context.addIssue({ code: 'custom', path: [path], message: `${path} is required in owner-oauth mode` });
+    }
+    if (config.mcpGatewayAllowInsecureHttp && !config.mcpGatewayAllowPrivateEndpoints) {
+      context.addIssue({ code: 'custom', path: ['mcpGatewayAllowInsecureHttp'], message: 'cleartext http MCP gateway endpoints require private endpoint opt-in' });
+    }
+    return;
+  }
+  if (oauthValues.some((value) => value !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['authMode'], message: 'OAuth settings are forbidden in cloudflare-access mode' });
   }
   if (config.mcpGatewayAllowInsecureHttp) {
     context.addIssue({ code: 'custom', path: ['authMode'], message: 'cleartext http MCP gateway endpoints are forbidden in cloudflare-access mode' });
@@ -198,6 +227,7 @@ export const ApiConfigSchema = z.object({
   }
 });
 
+
 export const SecretKeyringConfigSchema = z.object({
   activeVersion: z.number().int().positive(),
   keys: z.array(z.object({ version: z.number().int().positive(), key: z.string().min(43).max(64) }).strict()).min(1)
@@ -206,7 +236,7 @@ export const SecretKeyringConfigSchema = z.object({
 export const RunnerConfigSchema = z.object({
   host: z.string().default('0.0.0.0'),
   port: z.coerce.number().int().min(1).max(65_535).default(3001),
-  authMode: z.enum(['owner-bearer', 'cloudflare-access']).optional(),
+  authMode: z.enum(['owner-bearer', 'cloudflare-access', 'owner-oauth']).optional(),
   serviceToken: token,
   jobsRoot: z.string().min(1),
   stateDb: z.string().min(1),
@@ -286,10 +316,10 @@ export const RunnerConfigSchema = z.object({
   agents: RunnerAgentsConfigSchema.optional()
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
-  if (mode === 'owner-bearer' && config.legacyPrincipalMapping) {
+  if (mode !== 'cloudflare-access' && config.legacyPrincipalMapping) {
     context.addIssue({ code: 'custom', path: ['legacyPrincipalMapping'], message: 'legacy principal mapping is only valid in cloudflare-access mode' });
   }
-  if (mode === 'owner-bearer' && config.principalRelinks !== undefined) {
+  if (mode !== 'cloudflare-access' && config.principalRelinks !== undefined) {
     context.addIssue({ code: 'custom', path: ['principalRelinks'], message: 'principal relinks are only valid in cloudflare-access mode' });
   }
   const relinkSources = new Set<string>();
@@ -300,9 +330,10 @@ export const RunnerConfigSchema = z.object({
     }
     relinkSources.add(key);
   }
-  if (mode === 'owner-bearer' && config.githubApp && !config.githubApp.installationId) {
-    context.addIssue({ code: 'custom', path: ['githubApp', 'installationId'], message: 'GitHub App installation ID is required in owner-bearer mode' });
+  if (mode !== 'cloudflare-access' && config.githubApp && !config.githubApp.installationId) {
+    context.addIssue({ code: 'custom', path: ['githubApp', 'installationId'], message: 'GitHub App installation ID is required in owner-bearer and owner-oauth modes' });
   }
+
   if (mode === 'cloudflare-access' && config.githubApp && !config.githubApp.appSlug) {
     context.addIssue({ code: 'custom', path: ['githubApp', 'appSlug'], message: 'GitHub App slug is required in cloudflare-access mode' });
   }
