@@ -295,11 +295,10 @@ export class WorkspaceService {
     });
     if (fallbackToken) values['GH_TOKEN'] = fallbackToken;
     if (record.repositoryUrl) {
-      try {
-        const repoUrl = new URL(record.repositoryUrl);
-        const gitlabToken = resolveGitLabRepositoryToken(this.config, repoUrl);
+      if (isConfiguredGitLabRepository(this.config, record.repositoryUrl)) {
+        const gitlabToken = resolveGitLabRepositoryToken(this.config, record.repositoryUrl);
         if (gitlabToken) values['GITLAB_TOKEN'] = gitlabToken;
-      } catch { /* ignore URL parse error */ }
+      }
     }
     return values;
   }
@@ -309,15 +308,12 @@ export class WorkspaceService {
     if (cached) {
       const record = this.store.byId(workspaceId);
       if (record?.repositoryUrl) {
-        try {
-          const repoUrl = new URL(record.repositoryUrl);
-          if (isConfiguredGitLabRepository(this.config, repoUrl)) {
-            const currentToken = resolveGitLabRepositoryToken(this.config, repoUrl);
-            if (currentToken) {
-              cached.registerSecret('GITLAB_TOKEN', currentToken);
-            }
+        if (isConfiguredGitLabRepository(this.config, record.repositoryUrl)) {
+          const currentToken = resolveGitLabRepositoryToken(this.config, record.repositoryUrl);
+          if (currentToken) {
+            cached.registerSecret('GITLAB_TOKEN', currentToken);
           }
-        } catch { /* ignore URL parse error */ }
+        }
       }
       return cached;
     }
@@ -607,7 +603,7 @@ export class WorkspaceService {
     await mkdir(jobPath, { recursive: true, mode: 0o700 });
     await chmod(jobPath, 0o777);
 
-    let repositoryToken = await this.repositoryToken(record.ownerId, repositoryUrl, 'read', record.id);
+    let repositoryToken = await this.repositoryToken(record.ownerId, repositoryUrl, 'read', record.id, record.repositoryUrl);
     const redactor = this.getRedactor(record.id);
     if (repositoryToken) redactor.registerSecret('GITLAB_TOKEN', repositoryToken);
     let cachePathForVolume: string | undefined;
@@ -940,7 +936,7 @@ export class WorkspaceService {
           });
           const redactorValues: Record<string, string> = { ...environment };
           if (fallbackToken) redactorValues['GH_TOKEN'] = fallbackToken;
-          const gitlabToken = resolveGitLabRepositoryToken(this.config, url);
+          const gitlabToken = resolveGitLabRepositoryToken(this.config, record.repositoryUrl);
           if (gitlabToken) redactorValues['GITLAB_TOKEN'] = gitlabToken;
           this.redactorCache.set(workspaceId, new SecretSnapshotRedactor(redactorValues));
         } catch (error) {
@@ -1131,8 +1127,8 @@ export class WorkspaceService {
 
   private extractRepositoryName(repositoryUrl: URL): string | null {
     const parts = repositoryUrl.pathname.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '').split('/');
-    if (parts.length === 2 && parts[0] && parts[1]) {
-      return `${parts[0]}/${parts[1]}`;
+    if (parts.length >= 2 && parts.every(Boolean)) {
+      return parts.join('/');
     }
     return null;
   }
@@ -1143,6 +1139,7 @@ export class WorkspaceService {
     let isGitLabRepo = false;
     let owner = '';
     let repository = '';
+    let isGitLabHost = false;
     try {
       const url = new URL(record.repositoryUrl);
       repoName = this.extractRepositoryName(url);
@@ -1153,8 +1150,11 @@ export class WorkspaceService {
           owner = parts[0].toLowerCase();
           repository = parts[1].toLowerCase();
         }
-      } else if (isConfiguredGitLabRepository(this.config, url)) {
-        isGitLabRepo = true;
+      } else if (this.config.gitlabHost && url.hostname.toLowerCase() === this.config.gitlabHost.toLowerCase()) {
+        isGitLabHost = true;
+        if (isConfiguredGitLabRepository(this.config, record.repositoryUrl)) {
+          isGitLabRepo = true;
+        }
       }
     } catch {
       // Ignore invalid url format fallback
@@ -1172,14 +1172,10 @@ export class WorkspaceService {
     let pullRequestsRead = false;
     let pullRequestsWrite = false;
 
-    if (isGitLabRepo) {
-      let url: URL | undefined;
-      try { url = new URL(record.repositoryUrl); } catch { /* ignore */ }
-      const gitLabTokenAvailable = url ? hasGitLabRepositoryCredential(this.config, url) : false;
-      if (gitLabTokenAvailable) {
-        contentsRead = true;
-        contentsWrite = true;
-      }
+    if (isGitLabHost) {
+      const gitLabTokenAvailable = isGitLabRepo ? hasGitLabRepositoryCredential(this.config, record.repositoryUrl) : false;
+      contentsRead = gitLabTokenAvailable;
+      contentsWrite = gitLabTokenAvailable;
     } else if (authMode === 'cloudflare-access') {
       if (this.githubInstallations && isGitHub && owner && repository) {
         const grant = this.githubInstallations.getRepositoryGrant(record.ownerId, owner, repository);
@@ -1789,7 +1785,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
   private async remoteFetch(record: WorkspaceRecord, remoteRef: string | undefined, signal?: AbortSignal, historySpec = '') {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
-    const token = await this.repositoryToken(record.ownerId, repositoryUrl, 'read', record.id);
+    const token = await this.repositoryToken(record.ownerId, repositoryUrl, 'read', record.id, record.repositoryUrl);
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
       const fetched = await this.runGitTransferHelper(record, 'fetch', transferName, remoteRef ?? '', token, undefined, signal, historySpec);
@@ -1809,7 +1805,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const repoStr = this.extractRepositoryName(repositoryUrl);
     let token: string | undefined;
     try {
-      token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write', record.id);
+      token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write', record.id, record.repositoryUrl);
     } catch (err: unknown) {
       if (err instanceof HarnessError && (err.code === 'FORBIDDEN' || err.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
         throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', err.message, 403, false, {
@@ -3274,7 +3270,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
             let token: string | undefined;
             try {
-              token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write', record.id);
+              token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write', record.id, record.repositoryUrl);
             } catch { /* ignore if token cannot be minted */ }
             const remoteOid = await this.probeRemoteRefOid(record, branch, token, signal);
             if (remoteOid && remoteOid === existingOp.localCommitSha) {
@@ -3885,9 +3881,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
    * credentials are preferred for GitHub hosts; the operator-supplied GitHub
    * fallback is used only when no App token can be minted.
    */
-  private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write', workspaceId?: string): Promise<string | undefined> {
-    if (isConfiguredGitLabRepository(this.config, repositoryUrl)) {
-      const token = resolveGitLabRepositoryToken(this.config, repositoryUrl);
+  private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write', workspaceId?: string, rawRepositoryUrl?: string): Promise<string | undefined> {
+    const rawUrl = rawRepositoryUrl ?? (workspaceId ? this.store.byId(workspaceId)?.repositoryUrl : undefined);
+    if (rawUrl && isConfiguredGitLabRepository(this.config, rawUrl)) {
+      const token = resolveGitLabRepositoryToken(this.config, rawUrl);
       if (token && workspaceId) {
         const redactor = this.getRedactor(workspaceId);
         redactor.registerSecret('GITLAB_TOKEN', token);

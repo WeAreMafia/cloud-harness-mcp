@@ -81,7 +81,7 @@ function fixture(tokenContent: string = gitlabToken) {
     maxWorkspaceBytes: 1_048_576,
     reaperIntervalSeconds: 30,
     gitlabHost: 'git.iamsoftware.com.vn',
-    gitlabRepository: 'hoa.ngominh/bandodoanhnghiep',
+    gitlabAllowedNamespaces: ['hoa.ngominh', 'team-a/platform'],
     gitlabTokenFile: tokenFile
   };
 
@@ -111,7 +111,7 @@ function fixture(tokenContent: string = gitlabToken) {
     id: otherWorkspaceId,
     ownerId: 'owner',
     idempotencyKey: 'idemp-gitlab-other',
-    repositoryUrl: 'https://git.iamsoftware.com.vn/hoa.ngominh/other-project.git',
+    repositoryUrl: 'https://git.iamsoftware.com.vn/other/other-project.git',
     repositoryRef: null,
     containerName: 'executor-container-other',
     workspacePath: otherWorkspacePath,
@@ -163,13 +163,33 @@ describe('GitLab workspace capabilities (Requirement E)', () => {
     expect(caps.operations.tagList).toBe(false);
   });
 
-  it('reports repository push capability false for an unconfigured repository on the same GitLab host', () => {
+  it('reports repository capabilities true for a nested configured namespace (team-a/platform/repo)', () => {
+    const { service, store, configuredRecord } = fixture();
+    const nestedWorkspaceId = `ws_${'n'.repeat(24)}`;
+    const nestedRecord: WorkspaceRecord = {
+      ...configuredRecord,
+      id: nestedWorkspaceId,
+      idempotencyKey: 'idemp-gitlab-nested',
+      repositoryUrl: 'https://git.iamsoftware.com.vn/team-a/platform/repo.git'
+    };
+    store.create(nestedRecord);
+    const caps = service.computeWorkspaceCapabilities(nestedRecord);
+
+    expect(caps.repository).toBe('team-a/platform/repo');
+    expect(caps.capabilities.repository.read).toBe(true);
+    expect(caps.capabilities.repository.push).toBe(true);
+    expect(caps.permissions.contents.read).toBe(true);
+    expect(caps.permissions.contents.write).toBe(true);
+  });
+
+  it('reports repository capabilities false for an unconfigured repository/namespace on the same GitLab host', () => {
     const { service, otherRecord } = fixture();
     const caps = service.computeWorkspaceCapabilities(otherRecord);
 
-    expect(caps.repository).toBe('hoa.ngominh/other-project');
-    expect(caps.capabilities.repository.read).toBe(true);
+    expect(caps.repository).toBe('other/other-project');
+    expect(caps.capabilities.repository.read).toBe(false);
     expect(caps.capabilities.repository.push).toBe(false);
+    expect(caps.permissions.contents.read).toBe(false);
     expect(caps.permissions.contents.write).toBe(false);
     expect(caps.operations.gitPush).toBe(false);
   });
@@ -316,12 +336,13 @@ describe('GitLab secret redaction (Requirement F & 5)', () => {
 });
 
 describe('Repository name extraction (Requirement 8)', () => {
-  it('extracts owner/repo generically for both GitHub and GitLab URLs', () => {
+  it('extracts owner/repo generically for both GitHub and GitLab URLs including nested namespaces', () => {
     const { service } = fixture();
     const extract = (service as unknown as { extractRepositoryName: (url: URL) => string | null }).extractRepositoryName.bind(service);
 
     expect(extract(new URL('https://git.iamsoftware.com.vn/hoa.ngominh/bandodoanhnghiep.git'))).toBe('hoa.ngominh/bandodoanhnghiep');
     expect(extract(new URL('https://git.iamsoftware.com.vn/hoa.ngominh/bandodoanhnghiep'))).toBe('hoa.ngominh/bandodoanhnghiep');
+    expect(extract(new URL('https://git.iamsoftware.com.vn/team-a/platform/repo.git'))).toBe('team-a/platform/repo');
     expect(extract(new URL('https://github.com/owner/repo.git'))).toBe('owner/repo');
     expect(extract(new URL('https://github.com/owner/repo'))).toBe('owner/repo');
   });

@@ -233,6 +233,97 @@ export const SecretKeyringConfigSchema = z.object({
   keys: z.array(z.object({ version: z.number().int().positive(), key: z.string().min(43).max(64) }).strict()).min(1)
 }).strict();
 
+/**
+ * Safely parse and normalize GITLAB_ALLOWED_NAMESPACES configuration.
+ * Accepts either a comma-separated string or an array of strings.
+ * Rules:
+ * - trim whitespace
+ * - remove leading/trailing "/"
+ * - reject empty entries
+ * - reject "." and ".." path segments
+ * - reject query/fragment syntax (? or #)
+ * - do not accept a full URL as a namespace
+ * - reject backslash or percent-encoded characters
+ * - returns array of normalized lowercase namespaces (e.g. ['hoa.ngominh', 'team-a/platform'])
+ */
+export function parseGitLabAllowedNamespaces(value: unknown): string[] {
+  if (value === undefined || value === null) {
+    throw new Error('gitlabAllowedNamespaces cannot be undefined or null');
+  }
+  let entries: string[];
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      throw new Error('gitlabAllowedNamespaces must contain at least one namespace');
+    }
+    entries = value.map((entry) => {
+      if (typeof entry !== 'string') {
+        throw new Error('each namespace entry must be a string');
+      }
+      return entry;
+    });
+  } else if (typeof value === 'string') {
+    if (!value.trim()) {
+      throw new Error('gitlabAllowedNamespaces cannot be empty');
+    }
+    entries = value.split(',');
+  } else {
+    throw new Error('gitlabAllowedNamespaces must be a comma-separated string or an array of strings');
+  }
+
+  const normalizedList: string[] = [];
+  for (const rawEntry of entries) {
+    const trimmed = rawEntry.trim();
+    if (!trimmed) {
+      throw new Error('gitlabAllowedNamespaces contains an empty namespace entry');
+    }
+    if (trimmed.includes('://') || trimmed.startsWith('http:') || trimmed.startsWith('https:') || trimmed.includes(':')) {
+      throw new Error(`namespace "${trimmed}" must not be a full URL or contain scheme/port`);
+    }
+    if (trimmed.includes('?') || trimmed.includes('#')) {
+      throw new Error(`namespace "${trimmed}" must not contain query or fragment syntax`);
+    }
+    if (trimmed.includes('\\') || trimmed.includes('%')) {
+      throw new Error(`namespace "${trimmed}" contains forbidden backslash or percent-encoded characters`);
+    }
+
+    const withoutSlashes = trimmed.replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!withoutSlashes) {
+      throw new Error('gitlabAllowedNamespaces contains an empty namespace entry');
+    }
+
+    const segments = withoutSlashes.split('/');
+    for (const segment of segments) {
+      if (!segment) {
+        throw new Error(`namespace "${trimmed}" contains repeated slashes or empty path segments`);
+      }
+      if (segment === '.' || segment === '..') {
+        throw new Error(`namespace "${trimmed}" contains invalid dot segments ("." or "..")`);
+      }
+      if (!/^[a-zA-Z0-9_.-]+$/.test(segment)) {
+        throw new Error(`namespace segment "${segment}" contains invalid characters`);
+      }
+    }
+
+    const normalized = segments.map((s) => s.toLowerCase()).join('/');
+    normalizedList.push(normalized);
+  }
+
+  const uniqueList: string[] = [];
+  const seen = new Set<string>();
+  for (const item of normalizedList) {
+    if (!seen.has(item)) {
+      seen.add(item);
+      uniqueList.push(item);
+    }
+  }
+
+  if (uniqueList.length === 0) {
+    throw new Error('gitlabAllowedNamespaces must contain at least one valid namespace');
+  }
+
+  return uniqueList;
+}
+
 export const RunnerConfigSchema = z.object({
   host: z.string().default('0.0.0.0'),
   port: z.coerce.number().int().min(1).max(65_535).default(3001),
@@ -314,7 +405,20 @@ export const RunnerConfigSchema = z.object({
    */
   githubToken: z.string().min(1).max(512).optional(),
   gitlabHost: z.string().min(1).max(253).optional(),
-  gitlabRepository: z.string().min(1).max(512).optional(),
+  gitlabAllowedNamespaces: z.union([
+    z.string().min(1),
+    z.array(z.string().min(1)).min(1)
+  ]).transform((val, ctx) => {
+    try {
+      return parseGitLabAllowedNamespaces(val);
+    } catch (err: unknown) {
+      ctx.addIssue({
+        code: 'custom',
+        message: err instanceof Error ? err.message : 'invalid gitlabAllowedNamespaces'
+      });
+      return z.NEVER;
+    }
+  }).optional(),
   gitlabTokenFile: z.string().min(1).max(4_096)
     .refine((value) => value.startsWith('/'), 'gitlabTokenFile must be an absolute path')
     .optional(),
@@ -345,10 +449,10 @@ export const RunnerConfigSchema = z.object({
   if (config.maxArtifactBytes > config.maxPrincipalArtifactBytes) {
     context.addIssue({ code: 'custom', path: ['maxArtifactBytes'], message: 'per-artifact quota cannot exceed principal quota' });
   }
-  const gitlabConfigCount = [config.gitlabHost, config.gitlabRepository, config.gitlabTokenFile].filter((entry) => entry !== undefined).length;
+  const gitlabConfigCount = [config.gitlabHost, config.gitlabAllowedNamespaces, config.gitlabTokenFile].filter((entry) => entry !== undefined).length;
   if (gitlabConfigCount > 0 && gitlabConfigCount < 3) {
     if (!config.gitlabHost) context.addIssue({ code: 'custom', path: ['gitlabHost'], message: 'gitlabHost is required when GitLab integration is configured' });
-    if (!config.gitlabRepository) context.addIssue({ code: 'custom', path: ['gitlabRepository'], message: 'gitlabRepository is required when GitLab integration is configured' });
+    if (!config.gitlabAllowedNamespaces) context.addIssue({ code: 'custom', path: ['gitlabAllowedNamespaces'], message: 'gitlabAllowedNamespaces is required when GitLab integration is configured' });
     if (!config.gitlabTokenFile) context.addIssue({ code: 'custom', path: ['gitlabTokenFile'], message: 'gitlabTokenFile is required when GitLab integration is configured' });
   }
 });

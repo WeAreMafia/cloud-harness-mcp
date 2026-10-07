@@ -85,6 +85,9 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
   if (process.env.WORKSPACE_NETWORK_MODE !== undefined) {
     throw new Error("WORKSPACE_NETWORK_MODE was replaced by WORKSPACE_NETWORK_PROFILE; set WORKSPACE_NETWORK_PROFILE to 'network-none' or 'dependency-access'");
   }
+  if (process.env.GITLAB_REPOSITORY !== undefined) {
+    throw new Error("GITLAB_REPOSITORY was replaced by GITLAB_ALLOWED_NAMESPACES; configure GITLAB_ALLOWED_NAMESPACES with allowed namespace(s)");
+  }
 
   const agentConfigurationPresent = [
     'AGENT_IMAGE',
@@ -170,7 +173,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     } : undefined,
     githubToken,
     gitlabHost: process.env.GITLAB_HOST,
-    gitlabRepository: process.env.GITLAB_REPOSITORY,
+    gitlabAllowedNamespaces: process.env.GITLAB_ALLOWED_NAMESPACES,
     gitlabTokenFile: process.env.GITLAB_TOKEN_FILE,
     agents: agentConfigurationPresent ? {
       image: process.env.AGENT_IMAGE,

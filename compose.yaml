@@ -80,7 +80,7 @@ services:
       AGENT_GATEWAY_URL: http://model-gateway:3210
       AGENT_PROFILES_FILE: /run/agent-config/profiles.json
       GITLAB_HOST: ${GITLAB_HOST:-}
-      GITLAB_REPOSITORY: ${GITLAB_REPOSITORY:-}
+      GITLAB_ALLOWED_NAMESPACES: ${GITLAB_ALLOWED_NAMESPACES:-}
       GITLAB_TOKEN_FILE: ${GITLAB_TOKEN_FILE:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

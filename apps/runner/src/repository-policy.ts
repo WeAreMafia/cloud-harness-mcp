@@ -13,10 +13,17 @@ function isPrivate(address: string): boolean {
 }
 
 export async function validateRepositoryUrl(raw: string, allowedHosts: string[]): Promise<URL> {
+  if (raw.includes('\\') || /%2f/i.test(raw) || /%5c/i.test(raw)) {
+    throw new HarnessError('INVALID_INPUT', 'repositoryUrl contains invalid or ambiguous path characters');
+  }
   let url: URL;
   try { url = new URL(raw); } catch { throw new HarnessError('INVALID_INPUT', 'repositoryUrl must be a valid HTTPS URL'); }
   if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) {
     throw new HarnessError('INVALID_INPUT', 'only credential-free HTTPS repository URLs on port 443 are allowed');
+  }
+  const pathPart = raw.slice(raw.indexOf(url.host) + url.host.length).split(/[?#]/)[0] ?? '';
+  if (pathPart.includes('//') || /(?:^|\/)(?:%2e|\.)(?:%2e|\.)?(?:\/|$)/i.test(pathPart)) {
+    throw new HarnessError('INVALID_INPUT', 'repositoryUrl contains invalid or ambiguous path characters');
   }
   if (!allowedHosts.includes(url.hostname.toLowerCase())) throw new HarnessError('FORBIDDEN', 'repository host is not allowlisted', 403);
   const addresses = await lookup(url.hostname, { all: true, verbatim: true });

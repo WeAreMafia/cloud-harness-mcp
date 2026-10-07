@@ -84,7 +84,7 @@ if (secretsMount) {
 for (const name of ['SECRET_KEYRING', 'SECRET_KEYRING_FILE', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_APP_PRIVATE_KEY_FILE']) {
   requireBoundary(!services.api.environment?.[name], `API must not receive ${name}`);
 }
-for (const name of ['GITLAB_HOST', 'GITLAB_REPOSITORY', 'GITLAB_TOKEN_FILE']) {
+for (const name of ['GITLAB_HOST', 'GITLAB_ALLOWED_NAMESPACES', 'GITLAB_TOKEN_FILE']) {
   requireBoundary(!(name in (services.api.environment ?? {})), `API must not receive ${name}`);
   requireBoundary(name in (services.runner.environment ?? {}), `runner must receive ${name}`);
 }

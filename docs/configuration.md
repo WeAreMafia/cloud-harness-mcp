@@ -170,20 +170,31 @@ host reserve.
 
 ### GitLab self-hosted repository access
 
-For private self-hosted GitLab repositories, Cloud Harness MCP supports repository-scoped Project Access Tokens or Personal Access Tokens:
+For private self-hosted GitLab repositories, Cloud Harness MCP supports GitLab user Personal Access Tokens (PAT) scoped to explicitly allowed namespaces:
 
-- `GITLAB_HOST`: exact hostname of the GitLab instance (e.g. `git.example.com`). The host must also be included in `ALLOWED_GIT_HOSTS`.
-- `GITLAB_REPOSITORY`: exact normalized repository path (e.g. `team/project`).
-- `GITLAB_TOKEN_FILE`: absolute container path to the token file (e.g. `/run/cloud-harness-secrets/gitlab-project-token`), mounted read-only into the runner container.
+- `GITLAB_HOST`: exact hostname of the GitLab instance (e.g. `git.example.com`). The host must also be included in `ALLOWED_GIT_HOSTS`. Substring, prefix, wildcard, or suffix matching is forbidden.
+- `GITLAB_ALLOWED_NAMESPACES`: comma-separated list of allowed namespaces (e.g. `hoa.ngominh` or `hoa.ngominh,team-a/platform`). Duplicate entries are deduplicated after normalization while preserving first-seen order.
+- `GITLAB_TOKEN_FILE`: absolute container path to the token file (e.g. `/run/cloud-harness-secrets/gitlab-mcp-pat`), mounted read-only into the runner container.
 
 All three variables must be configured together. If any of the three is set without the others, runner configuration fails fast.
 
+Migration from `GITLAB_REPOSITORY`:
+`GITLAB_REPOSITORY` has been replaced by `GITLAB_ALLOWED_NAMESPACES`.
+- OLD: `GITLAB_REPOSITORY=hoa.ngominh/bandodoanhnghiep`
+- NEW: `GITLAB_ALLOWED_NAMESPACES=hoa.ngominh`
+The runner will fail fast at startup if `GITLAB_REPOSITORY` is still set.
+
+Authority and permission boundary:
+- **Cloud Harness allowlist**: controls strictly where the credential may be **OFFERED**. The harness ensures the token is only provided to repositories directly within configured namespaces on the exact host.
+- **GitLab PAT permissions**: control whether GitLab actually **ACCEPTS** access to that repository. GitLab remains the authoritative arbiter of repository permissions. A Project Access Token is scoped to only one project and cannot provide namespace-wide access; this integration is designed primarily for a GitLab user Personal Access Token (PAT) with minimum scope `write_repository`.
+
 Security and operational properties:
-- **Repository-scoped authorization**: The credential broker enforces exact matching on both the lowercase hostname and normalized repository path (`owner/repo`, ignoring leading/trailing slashes and `.git` suffix). It fails closed and will never provide the credential to a different repository on the same host.
+- **Raw-URL canonicalization invariant**: The credential broker operates strictly on the original raw repository URL string before WHATWG URL parsing. It rejects ambiguous or malicious path constructs including percent-encoded separators (`%2F`, `%5C`), backslashes, repeated slashes, dot segments (`.`, `..`, `%2e`), embedded credentials, or unexpected explicit ports. Pre-parsed URL objects are rejected by the credential broker to prevent parser-level dot-segment normalization bypasses.
+- **Namespace-scoped authorization**: The credential broker enforces exact matching on the lowercase hostname and direct containment within configured allowed namespaces (e.g., `hoa.ngominh` authorizes `hoa.ngominh/repo.git` but rejects `hoa.ngominh-evil/repo`, `other/hoa.ngominh/repo`, and unlisted nested subgroups like `hoa.ngominh/sub/repo`).
 - **Runner-only confinement**: The token file is read by the runner process only. It is never mounted into or accessible from the API, workspace executor, or clone helper container.
 - **Credential-free Git URLs**: Remote URLs in `.git/config` and MCP parameters remain clean HTTPS URLs without embedded credentials.
-- **Read-on-demand & zero-downtime rotation**: The token file is read on demand by the runner. Rotating the secret file on the host immediately applies to subsequent clone, fetch, and push operations without restarting the runner container.
-- **Minimum token scope**: A Project Access Token with `Developer` role and `write_repository` scope provides sufficient permissions for repository clone, fetch, branch creation, commit, and push (`workspace_finalize`).
+- **Read-on-demand & zero-downtime rotation**: The token file is read on demand by the runner. Rotating the secret file on the host immediately applies to subsequent clone, fetch, and push operations without restarting the runner container, and token rotation redaction protects both current and historical tokens.
+- **Minimum token scope**: A Personal Access Token with only `write_repository` scope provides sufficient permissions for repository clone, fetch, branch creation, commit, and push (`workspace_finalize`). No GitLab API scope is required.
 
 
 `MAX_ACTIVE_WORKSPACES_PER_OWNER` bounds the concurrent counted workspaces one

@@ -28,6 +28,17 @@ describe('repository URL policy', () => {
     await expect(validateRepositoryUrl('https://example.com/repo.git', ['github.com'])).rejects.toThrow();
   });
 
+  it('rejects ambiguous or malicious repository paths containing backslashes, percent-encoded separators, repeated slashes, or dot segments', async () => {
+    await expect(validateRepositoryUrl('https://github.com/owner%2Frepo.git', ['github.com'])).rejects.toThrow(/invalid or ambiguous/);
+    await expect(validateRepositoryUrl('https://github.com/owner%5Crepo.git', ['github.com'])).rejects.toThrow(/invalid or ambiguous/);
+    await expect(validateRepositoryUrl('https://github.com/owner\\repo.git', ['github.com'])).rejects.toThrow(/invalid or ambiguous/);
+    await expect(validateRepositoryUrl('https://github.com/owner//repo.git', ['github.com'])).rejects.toThrow(/invalid or ambiguous/);
+    await expect(validateRepositoryUrl('https://github.com/owner/./repo.git', ['github.com'])).rejects.toThrow(/invalid or ambiguous/);
+    await expect(validateRepositoryUrl('https://github.com/owner/../repo.git', ['github.com'])).rejects.toThrow(/invalid or ambiguous/);
+    await expect(validateRepositoryUrl('https://github.com/owner/%2e/repo.git', ['github.com'])).rejects.toThrow(/invalid or ambiguous/);
+    await expect(validateRepositoryUrl('https://github.com/owner/%2e%2e/repo.git', ['github.com'])).rejects.toThrow(/invalid or ambiguous/);
+  });
+
   it('does not mint credentials unless the optional GitHub App broker is configured', async () => {
     await expect(mintRepositoryToken(baseConfig, new URL('https://github.com/owner/repo.git'))).resolves.toBeUndefined();
   });
