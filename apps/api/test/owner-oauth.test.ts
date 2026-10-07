@@ -979,4 +979,89 @@ describe('owner-oauth auth mode', () => {
     const tokenForeignBody = await tokenForeign.json();
     expect(tokenForeignBody.error).toBe('invalid_target');
   });
+
+  // 23. CORS preflight for /mcp and OAuth interop
+  it('23. handles CORS preflight for /mcp without Authorization and enforces auth on POST/GET', async () => {
+    // 23a. OPTIONS /mcp without Authorization -> 204 with required CORS headers
+    const optionsRes = await fetch(`${baseUrl}/mcp`, {
+      method: 'OPTIONS',
+      headers: {
+        host: 'codex-mcp.iamsoftware.com.vn',
+        origin: 'https://chatgpt.com',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type, authorization, mcp-session-id'
+      }
+    });
+    expect(optionsRes.status).toBe(204);
+    expect(optionsRes.headers.get('access-control-allow-origin')).toBe('*');
+
+    const allowMethods = (optionsRes.headers.get('access-control-allow-methods') ?? '')
+      .split(',')
+      .map((m) => m.trim().toUpperCase());
+    expect(allowMethods).toContain('POST');
+    expect(allowMethods).toContain('GET');
+    expect(allowMethods).toContain('DELETE');
+    expect(allowMethods).toContain('OPTIONS');
+
+    const allowHeaders = (optionsRes.headers.get('access-control-allow-headers') ?? '')
+      .split(',')
+      .map((h) => h.trim().toLowerCase());
+    expect(allowHeaders).toContain('content-type');
+    expect(allowHeaders).toContain('authorization');
+    expect(allowHeaders).toContain('mcp-session-id');
+
+    const exposeHeaders = (optionsRes.headers.get('access-control-expose-headers') ?? '')
+      .split(',')
+      .map((h) => h.trim().toLowerCase());
+    expect(exposeHeaders).toContain('mcp-session-id');
+
+    // 23b. OPTIONS /mcp with bare headers returns 204
+    const bareOptionsRes = await fetch(`${baseUrl}/mcp`, {
+      method: 'OPTIONS',
+      headers: { host: 'codex-mcp.iamsoftware.com.vn' }
+    });
+    expect(bareOptionsRes.status).toBe(204);
+    expect(bareOptionsRes.headers.get('access-control-allow-origin')).toBe('*');
+
+    // 23c. POST /mcp without Authorization -> 401 with WWW-Authenticate challenge and CORS origin
+    const postRes = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
+    });
+    expect(postRes.status).toBe(401);
+    const postWwwAuth = postRes.headers.get('www-authenticate') ?? '';
+    expect(postWwwAuth).toContain('Bearer realm="cloud-harness-mcp"');
+    expect(postWwwAuth).toContain(`resource_metadata="${issuer}/.well-known/oauth-protected-resource"`);
+    expect(postRes.headers.get('access-control-allow-origin')).toBe('*');
+
+    // 23d. GET /mcp without Authorization -> 401 with CORS origin
+    const getRes = await fetch(`${baseUrl}/mcp`, {
+      method: 'GET',
+      headers: { host: 'codex-mcp.iamsoftware.com.vn' }
+    });
+    expect(getRes.status).toBe(401);
+    const getWwwAuth = getRes.headers.get('www-authenticate') ?? '';
+    expect(getWwwAuth).toContain('Bearer realm="cloud-harness-mcp"');
+    expect(getRes.headers.get('access-control-allow-origin')).toBe('*');
+
+    // 23e. DELETE /mcp without Authorization -> 401
+    const deleteRes = await fetch(`${baseUrl}/mcp`, {
+      method: 'DELETE',
+      headers: { host: 'codex-mcp.iamsoftware.com.vn' }
+    });
+    expect(deleteRes.status).toBe(401);
+    expect(deleteRes.headers.get('access-control-allow-origin')).toBe('*');
+
+    // 23f. Discovery endpoints continue to work as expected
+    const discRes = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`, {
+      headers: { host: 'codex-mcp.iamsoftware.com.vn' }
+    });
+    expect(discRes.status).toBe(200);
+
+    const openidRes = await fetch(`${baseUrl}/.well-known/openid-configuration`, {
+      headers: { host: 'codex-mcp.iamsoftware.com.vn' }
+    });
+    expect(openidRes.status).toBe(404);
+  });
 });

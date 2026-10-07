@@ -22,7 +22,7 @@ export function requestSecurity(config: ApiConfig) {
       return;
     }
     const rawOrigin = request.header('origin');
-    if (rawOrigin) {
+    if (rawOrigin && request.method !== 'OPTIONS') {
       let origin: string;
       try { origin = new URL(rawOrigin).origin; } catch { response.status(403).json({ error: 'forbidden_origin' }); return; }
       if (!origins.has(origin)) { response.status(403).json({ error: 'forbidden_origin' }); return; }

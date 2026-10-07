@@ -1,4 +1,4 @@
-import express, { type Express, type Request, type Response } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { FetchLike } from '@modelcontextprotocol/client';
@@ -41,6 +41,27 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
   app.get('/readyz', async (_request, response) => {
     const ready = await runnerClient.ready();
     response.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'unavailable' });
+  });
+  app.options('/mcp', (request: Request, response: Response) => {
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.setHeader('Access-Control-Allow-Methods', 'POST, GET, DELETE, OPTIONS');
+    const requestedHeaders = request.header('access-control-request-headers');
+    const defaultHeaders = ['Content-Type', 'Authorization', 'Mcp-Session-Id'];
+    if (requestedHeaders) {
+      const requested = requestedHeaders.split(',').map((h) => h.trim()).filter(Boolean);
+      const defaultsLower = new Set(defaultHeaders.map((h) => h.toLowerCase()));
+      const extra = requested.filter((h) => !defaultsLower.has(h.toLowerCase()));
+      response.setHeader('Access-Control-Allow-Headers', [...defaultHeaders, ...extra].join(', '));
+    } else {
+      response.setHeader('Access-Control-Allow-Headers', defaultHeaders.join(', '));
+    }
+    response.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+    response.sendStatus(204);
+  });
+  app.use('/mcp', (_request: Request, response: Response, next: NextFunction) => {
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+    next();
   });
   app.use('/mcp', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config, runnerClient), principalRequestLimits());
   app.use('/mcp', express.json({ limit: config.maxBodyBytes, strict: true }));

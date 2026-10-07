@@ -73,4 +73,38 @@ describe('MCP HTTP security', () => {
     });
     expect(status).toBe(403);
   });
+
+  it('handles OPTIONS /mcp preflight without authorization and includes CORS headers', async () => {
+    const response = await fetch(url, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://chatgpt.com',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'Content-Type, Authorization, Mcp-Session-Id'
+      }
+    });
+    expect(response.status).toBe(204);
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+
+    const methods = (response.headers.get('access-control-allow-methods') ?? '').split(',').map((m) => m.trim().toUpperCase());
+    expect(methods).toContain('POST');
+    expect(methods).toContain('GET');
+    expect(methods).toContain('DELETE');
+    expect(methods).toContain('OPTIONS');
+
+    const headers = (response.headers.get('access-control-allow-headers') ?? '').split(',').map((h) => h.trim().toLowerCase());
+    expect(headers).toContain('content-type');
+    expect(headers).toContain('authorization');
+    expect(headers).toContain('mcp-session-id');
+
+    const exposeHeaders = (response.headers.get('access-control-expose-headers') ?? '').split(',').map((h) => h.trim().toLowerCase());
+    expect(exposeHeaders).toContain('mcp-session-id');
+  });
+
+  it('rejects unauthenticated GET /mcp with 401', async () => {
+    const response = await fetch(url, { method: 'GET' });
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toContain('Bearer');
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+  });
 });
