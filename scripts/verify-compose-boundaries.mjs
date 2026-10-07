@@ -77,6 +77,10 @@ requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-ha
 requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-harness/cache/toolkits'), 'runner toolkit cache persistence mount is missing');
 requireBoundary(!runnerMounts.some((mount) => /model-gateway|provider-api-key/u.test(`${mount.source}:${mount.target}`)), 'runner must not receive model gateway secrets');
 requireBoundary(!runnerMounts.some((mount) => mount.source.includes('cloud-harness-model-gateway')), 'runner must not mount model gateway secret directory');
+const secretsMount = runnerMounts.find((mount) => mount.target === '/run/cloud-harness-secrets');
+if (secretsMount) {
+  requireBoundary(secretsMount.read_only === true, 'runner secrets mount must be read-only');
+}
 for (const name of ['SECRET_KEYRING', 'SECRET_KEYRING_FILE', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_APP_PRIVATE_KEY_FILE']) {
   requireBoundary(!services.api.environment?.[name], `API must not receive ${name}`);
 }

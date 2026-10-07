@@ -86,6 +86,7 @@ services:
       - ${HOST_ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}:${ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}
       - ${HOST_REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}:${REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}
       - ${HOST_TOOLKIT_CACHE_ROOT:-/var/lib/cloud-harness/cache/toolkits}:${TOOLKIT_CACHE_ROOT:-/var/lib/cloud-harness/cache/toolkits}
+      - ${HOST_SECRETS_ROOT:-/etc/cloud-harness-mcp}:/run/cloud-harness-secrets:ro
       - ${AGENT_PROFILES_HOST_FILE:-./config/runner-agent-profiles.json}:/run/agent-config/profiles.json:ro
     networks: [control, runner-egress]
     depends_on:

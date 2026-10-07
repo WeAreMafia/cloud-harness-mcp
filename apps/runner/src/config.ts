@@ -169,6 +169,9 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       appSlug: process.env.GITHUB_APP_SLUG
     } : undefined,
     githubToken,
+    gitlabHost: process.env.GITLAB_HOST,
+    gitlabRepository: process.env.GITLAB_REPOSITORY,
+    gitlabTokenFile: process.env.GITLAB_TOKEN_FILE,
     agents: agentConfigurationPresent ? {
       image: process.env.AGENT_IMAGE,
       networkMode: process.env.AGENT_NETWORK_MODE,

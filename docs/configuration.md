@@ -168,6 +168,24 @@ Runner-owned remote Git helpers do not depend on the executor network profile.
 runner/worker results. `MIN_FREE_BYTES` gates new workspace admission against a
 host reserve.
 
+### GitLab self-hosted repository access
+
+For private self-hosted GitLab repositories, Cloud Harness MCP supports repository-scoped Project Access Tokens or Personal Access Tokens:
+
+- `GITLAB_HOST`: exact hostname of the GitLab instance (e.g. `git.example.com`). The host must also be included in `ALLOWED_GIT_HOSTS`.
+- `GITLAB_REPOSITORY`: exact normalized repository path (e.g. `team/project`).
+- `GITLAB_TOKEN_FILE`: absolute container path to the token file (e.g. `/run/cloud-harness-secrets/gitlab-project-token`), mounted read-only into the runner container.
+
+All three variables must be configured together. If any of the three is set without the others, runner configuration fails fast.
+
+Security and operational properties:
+- **Repository-scoped authorization**: The credential broker enforces exact matching on both the lowercase hostname and normalized repository path (`owner/repo`, ignoring leading/trailing slashes and `.git` suffix). It fails closed and will never provide the credential to a different repository on the same host.
+- **Runner-only confinement**: The token file is read by the runner process only. It is never mounted into or accessible from the API, workspace executor, or clone helper container.
+- **Credential-free Git URLs**: Remote URLs in `.git/config` and MCP parameters remain clean HTTPS URLs without embedded credentials.
+- **Read-on-demand & zero-downtime rotation**: The token file is read on demand by the runner. Rotating the secret file on the host immediately applies to subsequent clone, fetch, and push operations without restarting the runner container.
+- **Minimum token scope**: A Project Access Token with `Developer` role and `write_repository` scope provides sufficient permissions for repository clone, fetch, branch creation, commit, and push (`workspace_finalize`).
+
+
 `MAX_ACTIVE_WORKSPACES_PER_OWNER` bounds the concurrent counted workspaces one
 principal may hold. Counted statuses are `CREATING`, `ACTIVE`, and
 `NETWORK_QUARANTINED`; a record in `REAPING` is in flight to teardown and holds no

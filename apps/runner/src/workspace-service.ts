@@ -25,6 +25,11 @@ import {
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken, requiredGitHubPermissions } from './github-app-broker.js';
+import {
+  hasGitLabRepositoryCredential,
+  isConfiguredGitLabRepository,
+  resolveGitLabRepositoryToken
+} from './gitlab-credential-broker.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import { ArtifactStoreError, type ArtifactMetadata, type ArtifactStore } from './artifact-store.js';
 import type { GitHubInstallationRecord, GitHubInstallationStore } from './github-installation-store.js';
@@ -289,6 +294,13 @@ export class WorkspaceService {
       metadata: this.metadata
     });
     if (fallbackToken) values['GH_TOKEN'] = fallbackToken;
+    if (record.repositoryUrl) {
+      try {
+        const repoUrl = new URL(record.repositoryUrl);
+        const gitlabToken = resolveGitLabRepositoryToken(this.config, repoUrl);
+        if (gitlabToken) values['GITLAB_TOKEN'] = gitlabToken;
+      } catch { /* ignore URL parse error */ }
+    }
     return values;
   }
 
@@ -900,9 +912,11 @@ export class WorkspaceService {
             principalId: ownerId,
             metadata: this.metadata
           });
-          this.redactorCache.set(workspaceId, new SecretSnapshotRedactor(
-            fallbackToken ? { ...environment, GH_TOKEN: fallbackToken } : environment
-          ));
+          const redactorValues: Record<string, string> = { ...environment };
+          if (fallbackToken) redactorValues['GH_TOKEN'] = fallbackToken;
+          const gitlabToken = resolveGitLabRepositoryToken(this.config, url);
+          if (gitlabToken) redactorValues['GITLAB_TOKEN'] = gitlabToken;
+          this.redactorCache.set(workspaceId, new SecretSnapshotRedactor(redactorValues));
         } catch (error) {
           if (error instanceof HarnessError) throw error;
           throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
@@ -1090,8 +1104,7 @@ export class WorkspaceService {
   }
 
   private extractRepositoryName(repositoryUrl: URL): string | null {
-    if (repositoryUrl.hostname.toLowerCase() !== 'github.com') return null;
-    const parts = repositoryUrl.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/');
+    const parts = repositoryUrl.pathname.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '').split('/');
     if (parts.length === 2 && parts[0] && parts[1]) {
       return `${parts[0]}/${parts[1]}`;
     }
@@ -1101,18 +1114,21 @@ export class WorkspaceService {
   computeWorkspaceCapabilities(record: WorkspaceRecord): WorkspaceCapabilityResult {
     let repoName: string | null = null;
     let isGitHub = false;
+    let isGitLabRepo = false;
     let owner = '';
     let repository = '';
     try {
       const url = new URL(record.repositoryUrl);
+      repoName = this.extractRepositoryName(url);
       if (url.hostname.toLowerCase() === 'github.com') {
         isGitHub = true;
-        const parts = url.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/');
+        const parts = url.pathname.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '').split('/');
         if (parts.length === 2 && parts[0] && parts[1]) {
           owner = parts[0].toLowerCase();
           repository = parts[1].toLowerCase();
-          repoName = `${parts[0]}/${parts[1]}`;
         }
+      } else if (isConfiguredGitLabRepository(this.config, url)) {
+        isGitLabRepo = true;
       }
     } catch {
       // Ignore invalid url format fallback
@@ -1130,7 +1146,15 @@ export class WorkspaceService {
     let pullRequestsRead = false;
     let pullRequestsWrite = false;
 
-    if (authMode === 'cloudflare-access') {
+    if (isGitLabRepo) {
+      let url: URL | undefined;
+      try { url = new URL(record.repositoryUrl); } catch { /* ignore */ }
+      const gitLabTokenAvailable = url ? hasGitLabRepositoryCredential(this.config, url) : false;
+      if (gitLabTokenAvailable) {
+        contentsRead = true;
+        contentsWrite = true;
+      }
+    } else if (authMode === 'cloudflare-access') {
       if (this.githubInstallations && isGitHub && owner && repository) {
         const grant = this.githubInstallations.getRepositoryGrant(record.ownerId, owner, repository);
         if (grant && grant.status === 'granted') {
@@ -1758,7 +1782,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       throw err;
     }
     if (!token) {
-      throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', 'Git push requires a configured GitHub App with repository write access', 403, false, {
+      const isGitHub = repositoryUrl.hostname.toLowerCase() === 'github.com';
+      const message = isGitHub
+        ? 'Git push requires a configured GitHub App with repository write access'
+        : 'Git push requires repository write credentials to be configured';
+      throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', message, 403, false, {
         operation: 'git_push',
         repository: repoStr ?? undefined,
         requiredCapability: 'repository.push'
@@ -3801,11 +3829,15 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 }
 
   /**
-   * Resolve a Git credential for one workspace operation. GitHub App
-   * credentials are preferred; the operator-supplied fallback is used only when
-   * no App token can be minted, so existing App deployments are unaffected.
+   * Resolve a Git credential for one workspace operation. GitLab project
+   * credentials match exact host and normalized repository path; GitHub App
+   * credentials are preferred for GitHub hosts; the operator-supplied GitHub
+   * fallback is used only when no App token can be minted.
    */
   private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write'): Promise<string | undefined> {
+    if (isConfiguredGitLabRepository(this.config, repositoryUrl)) {
+      return resolveGitLabRepositoryToken(this.config, repositoryUrl);
+    }
     const fallback = () => resolveGitHubFallbackToken({
       config: this.config,
       principalId: ownerId,

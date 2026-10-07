@@ -313,6 +313,11 @@ export const RunnerConfigSchema = z.object({
    * credential is ignored with a warning rather than rejected.
    */
   githubToken: z.string().min(1).max(512).optional(),
+  gitlabHost: z.string().min(1).max(253).optional(),
+  gitlabRepository: z.string().min(1).max(512).optional(),
+  gitlabTokenFile: z.string().min(1).max(4_096)
+    .refine((value) => value.startsWith('/'), 'gitlabTokenFile must be an absolute path')
+    .optional(),
   agents: RunnerAgentsConfigSchema.optional()
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
@@ -339,6 +344,12 @@ export const RunnerConfigSchema = z.object({
   }
   if (config.maxArtifactBytes > config.maxPrincipalArtifactBytes) {
     context.addIssue({ code: 'custom', path: ['maxArtifactBytes'], message: 'per-artifact quota cannot exceed principal quota' });
+  }
+  const gitlabConfigCount = [config.gitlabHost, config.gitlabRepository, config.gitlabTokenFile].filter((entry) => entry !== undefined).length;
+  if (gitlabConfigCount > 0 && gitlabConfigCount < 3) {
+    if (!config.gitlabHost) context.addIssue({ code: 'custom', path: ['gitlabHost'], message: 'gitlabHost is required when GitLab integration is configured' });
+    if (!config.gitlabRepository) context.addIssue({ code: 'custom', path: ['gitlabRepository'], message: 'gitlabRepository is required when GitLab integration is configured' });
+    if (!config.gitlabTokenFile) context.addIssue({ code: 'custom', path: ['gitlabTokenFile'], message: 'gitlabTokenFile is required when GitLab integration is configured' });
   }
 });
 
