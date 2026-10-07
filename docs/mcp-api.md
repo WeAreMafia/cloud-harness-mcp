@@ -25,11 +25,12 @@ Authorization Server and the MCP Resource Server at `/mcp`:
 - **Protected Resource Metadata (RFC 9728)**:
   `GET /.well-known/oauth-protected-resource` and alias `/.well-known/oauth-protected-resource/mcp`.
   Points clients to the resource identifier and authorization server issuer.
-- **Authorization Server Metadata (RFC 8414)**:
+- **Authorization Server Metadata (RFC 8414, RFC 9207)**:
   `GET /.well-known/oauth-authorization-server`.
   Advertises `code` response type, `authorization_code` and `refresh_token` grants,
-  PKCE code challenge method `S256`, and token endpoint authentication methods
-  `client_secret_post` and `client_secret_basic`.
+  PKCE code challenge method `S256`, token endpoint authentication methods
+  `client_secret_post` and `client_secret_basic`, and
+  `authorization_response_iss_parameter_supported: true`.
 - **Authorization Endpoint**:
   `GET /oauth/authorize` displays a server-rendered owner login form.
   After authenticating with `OAUTH_OWNER_PASSWORD` over HTTPS POST (protected by CSRF token and brute-force throttling),

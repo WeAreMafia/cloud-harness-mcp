@@ -103,6 +103,7 @@ describe('owner-oauth auth mode', () => {
     expect(data.code_challenge_methods_supported).toEqual(['S256']);
     expect(data.token_endpoint_auth_methods_supported).toEqual(['client_secret_post', 'client_secret_basic']);
     expect(data.scopes_supported).toContain('workspace:read');
+    expect(data.authorization_response_iss_parameter_supported).toBe(true);
   });
 
   // 2. Protected Resource Metadata
@@ -1063,5 +1064,136 @@ describe('owner-oauth auth mode', () => {
       headers: { host: 'codex-mcp.iamsoftware.com.vn' }
     });
     expect(openidRes.status).toBe(404);
+  });
+
+  // 24. RFC 9207 Issuer Identification: redirects include exact iss on success and errors
+  describe('24. RFC 9207 Issuer Identification redirects', () => {
+    it('24a. advertises authorization_response_iss_parameter_supported=true in authorization server metadata', async () => {
+      const res = await fetch(`${baseUrl}/.well-known/oauth-authorization-server`, {
+        headers: { host: 'codex-mcp.iamsoftware.com.vn' }
+      });
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.authorization_response_iss_parameter_supported).toBe(true);
+    });
+
+    it('24b. successful authorization redirect contains code, state (when supplied), and exact issuer', async () => {
+      const { challenge } = createPkce();
+      const pageRes = await fetch(
+        `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(allowedCallback)}&state=test_state_123&code_challenge=${challenge}&code_challenge_method=S256`,
+        { headers: { host: 'codex-mcp.iamsoftware.com.vn' } }
+      );
+      const html = await pageRes.text();
+      const csrfToken = html.match(/name="csrf_token" value="([^"]+)"/)![1];
+
+      const postRes = await fetch(`${baseUrl}/oauth/authorize`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          redirect_uri: allowedCallback,
+          state: 'test_state_123',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          csrf_token: csrfToken,
+          password: ownerPassword
+        }).toString()
+      });
+      expect(postRes.status).toBe(302);
+      const redirectUrl = new URL(postRes.headers.get('location')!);
+      expect(redirectUrl.origin + redirectUrl.pathname).toBe(allowedCallback);
+      expect(redirectUrl.searchParams.get('code')).toBeTruthy();
+      expect(redirectUrl.searchParams.get('state')).toBe('test_state_123');
+      expect(redirectUrl.searchParams.get('iss')).toBe(issuer);
+    });
+
+    it('24c. successful authorization redirect without state omits state parameter and contains code and exact issuer', async () => {
+      const { challenge } = createPkce();
+      const pageRes = await fetch(
+        `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(allowedCallback)}&code_challenge=${challenge}&code_challenge_method=S256`,
+        { headers: { host: 'codex-mcp.iamsoftware.com.vn' } }
+      );
+      const html = await pageRes.text();
+      const csrfToken = html.match(/name="csrf_token" value="([^"]+)"/)![1];
+
+      const postRes = await fetch(`${baseUrl}/oauth/authorize`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          redirect_uri: allowedCallback,
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          csrf_token: csrfToken,
+          password: ownerPassword
+        }).toString()
+      });
+      expect(postRes.status).toBe(302);
+      const redirectUrl = new URL(postRes.headers.get('location')!);
+      expect(redirectUrl.origin + redirectUrl.pathname).toBe(allowedCallback);
+      expect(redirectUrl.searchParams.get('code')).toBeTruthy();
+      expect(redirectUrl.searchParams.has('state')).toBe(false);
+      expect(redirectUrl.searchParams.get('iss')).toBe(issuer);
+    });
+
+    it('24d. redirected OAuth error on POST consent denial contains error, state (when applicable), and exact issuer', async () => {
+      const postRes = await fetch(`${baseUrl}/oauth/authorize`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          action: 'deny',
+          client_id: clientId,
+          redirect_uri: allowedCallback,
+          state: 'state_denied_post'
+        }).toString()
+      });
+      expect(postRes.status).toBe(302);
+      const redirectUrl = new URL(postRes.headers.get('location')!);
+      expect(redirectUrl.origin + redirectUrl.pathname).toBe(allowedCallback);
+      expect(redirectUrl.searchParams.get('error')).toBe('access_denied');
+      expect(redirectUrl.searchParams.get('state')).toBe('state_denied_post');
+      expect(redirectUrl.searchParams.get('iss')).toBe(issuer);
+      expect(redirectUrl.searchParams.has('code')).toBe(false);
+    });
+
+    it('24e. redirected OAuth error without state omits state and contains error and exact issuer', async () => {
+      const postRes = await fetch(`${baseUrl}/oauth/authorize`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { host: 'codex-mcp.iamsoftware.com.vn', 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          action: 'deny',
+          client_id: clientId,
+          redirect_uri: allowedCallback
+        }).toString()
+      });
+      expect(postRes.status).toBe(302);
+      const redirectUrl = new URL(postRes.headers.get('location')!);
+      expect(redirectUrl.origin + redirectUrl.pathname).toBe(allowedCallback);
+      expect(redirectUrl.searchParams.get('error')).toBe('access_denied');
+      expect(redirectUrl.searchParams.has('state')).toBe(false);
+      expect(redirectUrl.searchParams.get('iss')).toBe(issuer);
+      expect(redirectUrl.searchParams.has('code')).toBe(false);
+    });
+
+    it('24f. redirected OAuth error on GET /oauth/authorize contains error, state, and exact issuer', async () => {
+      const getRes = await fetch(
+        `${baseUrl}/oauth/authorize?action=deny&client_id=${clientId}&redirect_uri=${encodeURIComponent(allowedCallback)}&state=state_denied_get`,
+        {
+          redirect: 'manual',
+          headers: { host: 'codex-mcp.iamsoftware.com.vn' }
+        }
+      );
+      expect(getRes.status).toBe(302);
+      const redirectUrl = new URL(getRes.headers.get('location')!);
+      expect(redirectUrl.origin + redirectUrl.pathname).toBe(allowedCallback);
+      expect(redirectUrl.searchParams.get('error')).toBe('access_denied');
+      expect(redirectUrl.searchParams.get('state')).toBe('state_denied_get');
+      expect(redirectUrl.searchParams.get('iss')).toBe(issuer);
+      expect(redirectUrl.searchParams.has('code')).toBe(false);
+    });
   });
 });

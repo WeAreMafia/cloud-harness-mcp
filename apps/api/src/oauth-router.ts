@@ -201,6 +201,22 @@ function renderLoginPage(params: {
     button[type="submit"]:hover {
       background: var(--primary-hover);
     }
+    .form-actions {
+      display: flex;
+      gap: 0.75rem;
+    }
+    .form-actions button {
+      flex: 1;
+    }
+    .btn-deny {
+      background: #21262d;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-deny:hover {
+      background: #30363d;
+      color: var(--text-bright);
+    }
   </style>
 </head>
 <body>
@@ -238,10 +254,13 @@ function renderLoginPage(params: {
 
       <div class="form-group">
         <label for="password">Owner Password</label>
-        <input type="password" id="password" name="password" required autofocus autocomplete="current-password" placeholder="Enter OAUTH_OWNER_PASSWORD">
+        <input type="password" id="password" name="password" autofocus autocomplete="current-password" placeholder="Enter OAUTH_OWNER_PASSWORD">
       </div>
 
-      <button type="submit">Authorize ChatGPT</button>
+      <div class="form-actions">
+        <button type="submit" name="action" value="authorize">Authorize ChatGPT</button>
+        <button type="submit" name="action" value="deny" formnovalidate class="btn-deny">Deny</button>
+      </div>
     </form>
   </div>
 </body>
@@ -293,6 +312,38 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
   const resourceUri = `${issuer}/mcp`;
   const supportedScopes = ['workspace:read', 'workspace:write', 'workspace:execute'];
 
+  function redirectOAuthResponse(
+    res: Response,
+    redirectUri: string,
+    params: Record<string, string | undefined>
+  ): void {
+    const callbackUrl = new URL(redirectUri);
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== '') {
+        callbackUrl.searchParams.set(key, value);
+      }
+    }
+    res.redirect(302, callbackUrl.toString());
+  }
+
+  function redirectOAuthError(
+    res: Response,
+    redirectUri: string,
+    params: {
+      error: string;
+      errorDescription?: string | undefined;
+      state?: string | undefined;
+      issuer: string;
+    }
+  ): void {
+    redirectOAuthResponse(res, redirectUri, {
+      error: params.error,
+      error_description: params.errorDescription,
+      state: params.state,
+      iss: params.issuer
+    });
+  }
+
   // 1. Protected Resource Metadata (RFC 9728)
   const protectedResourceMetadata = (_req: Request, res: Response) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -309,7 +360,7 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
   router.get('/.well-known/oauth-protected-resource', protectedResourceMetadata);
   router.get('/.well-known/oauth-protected-resource/mcp', protectedResourceMetadata);
 
-  // 2. OAuth Authorization Server Metadata (RFC 8414)
+  // 2. OAuth Authorization Server Metadata (RFC 8414, RFC 9207)
   router.get('/.well-known/oauth-authorization-server', (_req: Request, res: Response) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -322,7 +373,8 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
       grant_types_supported: ['authorization_code', 'refresh_token'],
       code_challenge_methods_supported: ['S256'],
       token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
-      scopes_supported: supportedScopes
+      scopes_supported: supportedScopes,
+      authorization_response_iss_parameter_supported: true
     });
   });
 
@@ -357,6 +409,22 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
       return;
     }
 
+    const action = typeof req.query.action === 'string' ? req.query.action : '';
+    const errorParam = typeof req.query.error === 'string' ? req.query.error : '';
+    if (action === 'deny' || action === 'cancel' || errorParam) {
+      const error = errorParam || 'access_denied';
+      const errorDescription = typeof req.query.error_description === 'string' && req.query.error_description
+        ? req.query.error_description
+        : 'The owner denied the authorization request';
+      redirectOAuthError(res, redirectUri, {
+        error,
+        errorDescription,
+        state: state || undefined,
+        issuer
+      });
+      return;
+    }
+
     if (responseType !== 'code') {
       res.status(400).type('text/plain').send('Unsupported response_type; must be "code"');
       return;
@@ -364,11 +432,6 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
 
     if (codeChallengeMethod !== 'S256' || !codeChallenge || codeChallenge.length < 43 || codeChallenge.length > 128) {
       res.status(400).type('text/plain').send('Invalid code_challenge or code_challenge_method; S256 required');
-      return;
-    }
-
-    if (!state) {
-      res.status(400).type('text/plain').send('Missing state parameter');
       return;
     }
 
@@ -415,10 +478,26 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
     const codeChallengeMethod = typeof req.body.code_challenge_method === 'string' ? req.body.code_challenge_method : '';
     const csrfToken = typeof req.body.csrf_token === 'string' ? req.body.csrf_token : '';
     const password = typeof req.body.password === 'string' ? req.body.password : '';
+    const action = typeof req.body.action === 'string' ? req.body.action : 'authorize';
+    const errorParam = typeof req.body.error === 'string' ? req.body.error : '';
 
     const allowedUris = config.oauthAllowedRedirectUris ?? [];
     if (!clientId || clientId !== config.oauthClientId || !allowedUris.includes(redirectUri)) {
       res.status(400).type('text/plain').send('Invalid authorization request parameters');
+      return;
+    }
+
+    if (action === 'deny' || action === 'cancel' || errorParam) {
+      const error = errorParam || 'access_denied';
+      const errorDescription = typeof req.body.error_description === 'string' && req.body.error_description
+        ? req.body.error_description
+        : 'The owner denied the authorization request';
+      redirectOAuthError(res, redirectUri, {
+        error,
+        errorDescription,
+        state: state || undefined,
+        issuer
+      });
       return;
     }
 
@@ -495,13 +574,12 @@ export function createOAuthRouter(config: ApiConfig, runnerClient: RunnerClient)
       return;
     }
 
-    // Redirect back to ChatGPT with code, state, and iss (RFC 9207)
-    const callbackUrl = new URL(redirectUri);
-    callbackUrl.searchParams.set('code', code);
-    callbackUrl.searchParams.set('state', state);
-    callbackUrl.searchParams.set('iss', issuer);
-
-    res.redirect(302, callbackUrl.toString());
+    // Redirect back to ChatGPT with code, state (when supplied), and iss (RFC 9207)
+    redirectOAuthResponse(res, redirectUri, {
+      code,
+      state: state || undefined,
+      iss: issuer
+    });
   });
 
   // 5. Token Endpoint (POST /oauth/token)
