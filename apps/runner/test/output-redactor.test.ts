@@ -110,4 +110,56 @@ describe('SecretSnapshotRedactor', () => {
       }
     });
   });
+
+  it('registers new secrets dynamically and keeps both existing and new secrets redacted', () => {
+    const redactor = new SecretSnapshotRedactor({
+      TOKEN_A: 'token_initial_111'
+    });
+
+    expect(redactor.sanitizeString('leaked token_initial_111')).toBe('leaked [REDACTED_SECRET: TOKEN_A]');
+    expect(redactor.sanitizeString('leaked token_rotated_222')).toBe('leaked token_rotated_222');
+
+    redactor.registerSecret('TOKEN_B', 'token_rotated_222');
+
+    expect(redactor.sanitizeString('leaked token_initial_111')).toBe('leaked [REDACTED_SECRET: TOKEN_A]');
+    expect(redactor.sanitizeString('leaked token_rotated_222')).toBe('leaked [REDACTED_SECRET: TOKEN_B]');
+
+    const stream = redactor.createStream();
+    const chunk = Buffer.from('both token_initial_111 and token_rotated_222 here', 'utf8');
+    const out = stream.processChunk(chunk);
+    const final = Buffer.concat([out, stream.flush()]).toString('utf8');
+    expect(final).toBe('both [REDACTED_SECRET: TOKEN_A] and [REDACTED_SECRET: TOKEN_B] here');
+  });
+
+  it('safely synchronizes dynamic secrets into an active StreamRedactor mid-stream without leaking', () => {
+    const redactor = new SecretSnapshotRedactor({
+      SECRET_OLD: 'initial_secret_111'
+    });
+
+    // 1. Create StreamRedactor
+    const stream = redactor.createStream();
+
+    // 2. Process at least one chunk (containing old secret and partial text)
+    const out1 = stream.processChunk(Buffer.from('chunk1 starts with initial_secret_111 and continues ', 'utf8'));
+    expect(out1.toString('utf8')).toContain('[REDACTED_SECRET: SECRET_OLD]');
+    expect(out1.toString('utf8')).not.toContain('initial_secret_111');
+
+    // 3. Dynamically register another secret mid-stream
+    redactor.registerSecret('SECRET_NEW', 'rotated_secret_222');
+
+    // 4. Continue processing with subsequent chunk containing newly registered secret and old secret
+    const out2 = stream.processChunk(Buffer.from('chunk2 with rotated_secret_222 and initial_secret_111 again.', 'utf8'));
+
+    // 5. Verify old and new secrets cannot leak and stream processing remains correct
+    const out3 = stream.flush();
+    const fullStreamOutput = Buffer.concat([out1, out2, out3]).toString('utf8');
+
+    expect(fullStreamOutput).not.toContain('initial_secret_111');
+    expect(fullStreamOutput).not.toContain('rotated_secret_222');
+    expect(fullStreamOutput).toContain('[REDACTED_SECRET: SECRET_OLD]');
+    expect(fullStreamOutput).toContain('[REDACTED_SECRET: SECRET_NEW]');
+    expect(fullStreamOutput).toBe(
+      'chunk1 starts with [REDACTED_SECRET: SECRET_OLD] and continues chunk2 with [REDACTED_SECRET: SECRET_NEW] and [REDACTED_SECRET: SECRET_OLD] again.'
+    );
+  });
 });

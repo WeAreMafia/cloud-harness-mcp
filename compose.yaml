@@ -79,6 +79,9 @@ services:
       AGENT_IMAGE: ${AGENT_IMAGE:-cloud-harness-agent:local}
       AGENT_GATEWAY_URL: http://model-gateway:3210
       AGENT_PROFILES_FILE: /run/agent-config/profiles.json
+      GITLAB_HOST: ${GITLAB_HOST:-}
+      GITLAB_REPOSITORY: ${GITLAB_REPOSITORY:-}
+      GITLAB_TOKEN_FILE: ${GITLAB_TOKEN_FILE:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_JOBS_ROOT:-/var/lib/cloud-harness/jobs}:${JOBS_ROOT:-/var/lib/cloud-harness/jobs}

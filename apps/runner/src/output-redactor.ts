@@ -26,16 +26,39 @@ function createNode(depth = 0): TrieNode {
 
 export class StreamRedactor {
   private currentNode: TrieNode;
+  private root: TrieNode;
+  private hasPatterns: boolean;
   private holdback: Buffer = Buffer.alloc(0);
+  private readonly snapshot?: SecretSnapshotRedactor;
+  private snapshotVersion = 0;
 
   constructor(
-    private readonly root: TrieNode,
-    private readonly hasPatterns: boolean
+    rootOrSnapshot: TrieNode | SecretSnapshotRedactor,
+    hasPatterns?: boolean
   ) {
-    this.currentNode = root;
+    if (rootOrSnapshot instanceof SecretSnapshotRedactor) {
+      this.snapshot = rootOrSnapshot;
+      this.root = rootOrSnapshot.rootNode;
+      this.hasPatterns = rootOrSnapshot.active;
+      this.snapshotVersion = rootOrSnapshot.version;
+    } else {
+      this.root = rootOrSnapshot;
+      this.hasPatterns = Boolean(hasPatterns);
+    }
+    this.currentNode = this.root;
+  }
+
+  private syncAutomaton(): void {
+    if (this.snapshot && this.snapshot.version !== this.snapshotVersion) {
+      this.root = this.snapshot.rootNode;
+      this.hasPatterns = this.snapshot.active;
+      this.snapshotVersion = this.snapshot.version;
+      this.currentNode = this.root;
+    }
   }
 
   processChunk(chunk: Buffer): Buffer {
+    this.syncAutomaton();
     if (!this.hasPatterns || chunk.length === 0) {
       if (this.holdback.length === 0) return chunk;
       const combined = Buffer.concat([this.holdback, chunk]);
@@ -107,6 +130,7 @@ export class StreamRedactor {
   }
 
   flush(): Buffer {
+    this.syncAutomaton();
     if (this.holdback.length === 0) return Buffer.alloc(0);
     const input = this.holdback;
     this.holdback = Buffer.alloc(0);
@@ -167,8 +191,9 @@ export class StreamRedactor {
 }
 
 export class SecretSnapshotRedactor {
-  private readonly root: TrieNode;
+  private root: TrieNode;
   private readonly patterns: SecretEntry[];
+  private _version = 0;
 
   constructor(secrets: Record<string, string> = {}) {
     const raw: SecretEntry[] = [];
@@ -179,15 +204,34 @@ export class SecretSnapshotRedactor {
     }
     this.patterns = raw.sort((a, b) => Buffer.byteLength(b.value, 'utf8') - Buffer.byteLength(a.value, 'utf8'));
     this.root = createNode(0);
-    this.buildTrie();
+    this.buildTrie(this.root);
+  }
+
+  get version(): number {
+    return this._version;
+  }
+
+  get rootNode(): TrieNode {
+    return this.root;
   }
 
   get active(): boolean {
     return this.patterns.length > 0;
   }
 
+  registerSecret(name: string, value: string): void {
+    if (typeof value !== 'string' || value.length === 0) return;
+    if (this.patterns.some((p) => p.value === value)) return;
+    this.patterns.push({ name, value });
+    this.patterns.sort((a, b) => Buffer.byteLength(b.value, 'utf8') - Buffer.byteLength(a.value, 'utf8'));
+    const newRoot = createNode(0);
+    this.buildTrie(newRoot);
+    this.root = newRoot;
+    this._version++;
+  }
+
   createStream(): StreamRedactor {
-    return new StreamRedactor(this.root, this.active);
+    return new StreamRedactor(this);
   }
 
   sanitizeString(text: string): string {
@@ -219,10 +263,10 @@ export class SecretSnapshotRedactor {
     return value;
   }
 
-  private buildTrie(): void {
+  private buildTrie(root: TrieNode): void {
     for (const pattern of this.patterns) {
       const bytes = Buffer.from(pattern.value, 'utf8');
-      let current = this.root;
+      let current = root;
       for (let i = 0; i < bytes.length; i++) {
         const byte = bytes[i]!;
         let nextNode = current.next.get(byte);
@@ -236,8 +280,8 @@ export class SecretSnapshotRedactor {
     }
 
     const queue: TrieNode[] = [];
-    for (const child of this.root.next.values()) {
-      child.fail = this.root;
+    for (const child of root.next.values()) {
+      child.fail = root;
       queue.push(child);
     }
 
@@ -248,7 +292,7 @@ export class SecretSnapshotRedactor {
         while (fallback !== null && !fallback.next.has(byte)) {
           fallback = fallback.fail;
         }
-        child.fail = fallback ? (fallback.next.get(byte) ?? this.root) : this.root;
+        child.fail = fallback ? (fallback.next.get(byte) ?? root) : root;
         if (child.fail.output.length > 0) {
           child.output.push(...child.fail.output);
         }

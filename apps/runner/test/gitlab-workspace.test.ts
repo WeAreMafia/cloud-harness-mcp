@@ -232,6 +232,87 @@ describe('GitLab secret redaction (Requirement F & 5)', () => {
     expect(redacted).not.toContain(gitlabToken);
     expect(redacted).toContain('[REDACTED_SECRET: GITLAB_TOKEN]');
   });
+
+  it('protects rotated token B and historical token A when token rotates in active workspace', async () => {
+    const tokenA = 'glpat-token-alpha-original-1111';
+    const tokenB = 'glpat-token-beta-rotated-2222';
+    const { service, workspaceId, tokenFile } = fixture(tokenA);
+
+    // 1. Build and cache redactor for workspace with token A
+    const redactorBefore = (service as unknown as { getRedactor: (id: string) => { sanitizeString: (t: string) => string } }).getRedactor(workspaceId);
+    expect(redactorBefore.sanitizeString(`output with ${tokenA}`)).toBe('output with [REDACTED_SECRET: GITLAB_TOKEN]');
+    expect(redactorBefore.sanitizeString(`output with ${tokenB}`)).toBe(`output with ${tokenB}`);
+
+    // 2. Rotate token file to token B while workspace remains active
+    writeFileSync(tokenFile, `${tokenB}\n`);
+
+    // 3. Simulate Git operation (git_push) where git helper succeeds but outputs token B
+    docker.runDocker.mockImplementation(async (args: string[]) => {
+      if (args.includes('/opt/harness/worker-runner.sh')) {
+        return { stdout: JSON.stringify({ ok: true, message: 'worker complete', data: { output: 'worker-ok' }, truncated: false }), stderr: '', exitCode: 0, truncated: false };
+      }
+      if (args.includes('branch') && args.includes('--show-current')) {
+        return { stdout: 'main\n', stderr: '', exitCode: 0, truncated: false };
+      }
+      if (args.includes('rev-parse') && args.includes('HEAD')) {
+        return { stdout: '0123456789abcdef0123456789abcdef01234567\n', stderr: '', exitCode: 0, truncated: false };
+      }
+      if (args.includes('/opt/harness/git-transfer-helper.sh')) {
+        return { stdout: `push remote success: response echo ${tokenB}\n`, stderr: '', exitCode: 0, truncated: false };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+    });
+
+    const pushResult = await service.execute('owner', 'git_push', {
+      workspaceId,
+      remote: 'origin',
+      refspec: 'HEAD:refs/heads/main'
+    });
+
+    expect(pushResult.ok).toBe(true);
+    expect(JSON.stringify(pushResult)).not.toContain(tokenB);
+    expect(JSON.stringify(pushResult)).toContain('[REDACTED_SECRET: GITLAB_TOKEN]');
+    expect((pushResult.data as Record<string, unknown>).output).toContain('[REDACTED_SECRET: GITLAB_TOKEN]');
+    expect((pushResult.data as Record<string, unknown>).output).not.toContain(tokenB);
+
+    // 4. Simulate Git operation failure where helper stderr contains token B
+    docker.runDocker.mockImplementation(async (args: string[]) => {
+      if (args.includes('branch') && args.includes('--show-current')) {
+        return { stdout: 'main\n', stderr: '', exitCode: 0, truncated: false };
+      }
+      if (args.includes('rev-parse') && args.includes('HEAD')) {
+        return { stdout: '0123456789abcdef0123456789abcdef01234567\n', stderr: '', exitCode: 0, truncated: false };
+      }
+      if (args.includes('/opt/harness/git-transfer-helper.sh')) {
+        return { stdout: '', stderr: `fatal: remote rejected token ${tokenB} auth failure`, exitCode: 1, truncated: false };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+    });
+
+    let surfacedError: Error | undefined;
+    try {
+      await service.execute('owner', 'git_push', {
+        workspaceId,
+        remote: 'origin',
+        refspec: 'HEAD:refs/heads/main'
+      });
+    } catch (err) {
+      surfacedError = err as Error;
+    }
+
+    expect(surfacedError).toBeDefined();
+    expect(surfacedError!.message).not.toContain(tokenB);
+    expect(surfacedError!.message).toContain('[REDACTED_SECRET: GITLAB_TOKEN]');
+
+    // 5. Assert token A is still protected if cached historical output is processed
+    const redactorAfter = (service as unknown as { getRedactor: (id: string) => { sanitizeString: (t: string) => string } }).getRedactor(workspaceId);
+    const historicalOutput = `historical log line with old token ${tokenA} and new token ${tokenB}`;
+    const sanitized = redactorAfter.sanitizeString(historicalOutput);
+
+    expect(sanitized).not.toContain(tokenA);
+    expect(sanitized).not.toContain(tokenB);
+    expect(sanitized).toBe('historical log line with old token [REDACTED_SECRET: GITLAB_TOKEN] and new token [REDACTED_SECRET: GITLAB_TOKEN]');
+  });
 });
 
 describe('Repository name extraction (Requirement 8)', () => {

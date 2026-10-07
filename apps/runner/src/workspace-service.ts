@@ -306,7 +306,21 @@ export class WorkspaceService {
 
   private getRedactor(workspaceId: string): SecretSnapshotRedactor {
     const cached = this.redactorCache.get(workspaceId);
-    if (cached) return cached;
+    if (cached) {
+      const record = this.store.byId(workspaceId);
+      if (record?.repositoryUrl) {
+        try {
+          const repoUrl = new URL(record.repositoryUrl);
+          if (isConfiguredGitLabRepository(this.config, repoUrl)) {
+            const currentToken = resolveGitLabRepositoryToken(this.config, repoUrl);
+            if (currentToken) {
+              cached.registerSecret('GITLAB_TOKEN', currentToken);
+            }
+          }
+        } catch { /* ignore URL parse error */ }
+      }
+      return cached;
+    }
     const redactor = new SecretSnapshotRedactor(this.redactionSecrets(workspaceId));
     this.redactorCache.set(workspaceId, redactor);
     return redactor;
@@ -593,7 +607,9 @@ export class WorkspaceService {
     await mkdir(jobPath, { recursive: true, mode: 0o700 });
     await chmod(jobPath, 0o777);
 
-    let repositoryToken = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
+    let repositoryToken = await this.repositoryToken(record.ownerId, repositoryUrl, 'read', record.id);
+    const redactor = this.getRedactor(record.id);
+    if (repositoryToken) redactor.registerSecret('GITLAB_TOKEN', repositoryToken);
     let cachePathForVolume: string | undefined;
     if (this.config.enableRepoCache) {
       try {
@@ -620,7 +636,13 @@ export class WorkspaceService {
 
     const runClone = async (token: string | undefined, cachePath?: string) => {
       try {
-        return await runDocker(buildArgs(cachePath), { stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes });
+        const cloneResult = await runDocker(buildArgs(cachePath), { stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes });
+        if (token) redactor.registerSecret('GITLAB_TOKEN', token);
+        return {
+          ...cloneResult,
+          stdout: redactor.sanitizeString(cloneResult.stdout),
+          stderr: redactor.sanitizeString(cloneResult.stderr)
+        };
       } finally {
         await removeContainer(helperName);
       }
@@ -637,10 +659,14 @@ export class WorkspaceService {
       if (refreshedToken) {
         await this.safeRemovePath(repositoryPath);
         repositoryToken = refreshedToken;
+        redactor.registerSecret('GITLAB_TOKEN', repositoryToken);
         result = await runClone(repositoryToken, undefined);
       }
     }
-    if (result.exitCode !== 0) throw new HarnessError('UNAVAILABLE', `repository clone failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 502, true);
+    if (result.exitCode !== 0) {
+      const errText = redactor.sanitizeString(result.stderr || result.stdout);
+      throw new HarnessError('UNAVAILABLE', `repository clone failed: ${errText}`.slice(0, 2_000), 502, true);
+    }
     return repositoryPath;
   }
   private async refreshRepositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write' = 'read'): Promise<string | undefined> {
@@ -1591,6 +1617,10 @@ export class WorkspaceService {
     signal?: AbortSignal,
     historySpec = ''
   ) {
+    const redactor = this.getRedactor(record.id);
+    if (token) {
+      redactor.registerSecret('GITLAB_TOKEN', token);
+    }
     const helperName = `chm-git-${mode.replaceAll('-', '').slice(0, 5)}-${randomBytes(6).toString('hex')}`;
     const network = mode === 'fetch' || mode === 'push' ? 'bridge' : 'none';
     try {
@@ -1608,9 +1638,16 @@ export class WorkspaceService {
         stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes,
         ...(signal ? { signal } : {})
       });
+      const sanitizedStdout = redactor.sanitizeString(result.stdout);
+      const sanitizedStderr = redactor.sanitizeString(result.stderr);
+      const sanitizedResult = {
+        ...result,
+        stdout: sanitizedStdout,
+        stderr: sanitizedStderr
+      };
       if (result.exitCode !== 0) {
         const action = mode === 'push' ? 'push' : mode === 'fetch' ? 'fetch' : 'transfer';
-        const errText = result.stderr || result.stdout;
+        const errText = sanitizedStderr || sanitizedStdout;
         if (mode === 'push') {
           if (errText.includes('stale info') || errText.includes('[rejected]') || errText.includes('lease') || errText.includes('non-fast-forward') || errText.includes('fetch first')) {
             throw new HarnessError('CONFLICT', `Git push rejected: remote ref has diverged or force-with-lease failed (${errText})`.slice(0, 2_000), 409, false, {
@@ -1627,7 +1664,7 @@ export class WorkspaceService {
         }
         throw new HarnessError('UNAVAILABLE', `Git ${action} failed: ${errText}`.slice(0, 2_000), 502, true);
       }
-      return result;
+      return sanitizedResult;
     } finally {
       await removeContainer(helperName);
     }
@@ -1702,6 +1739,8 @@ export class WorkspaceService {
   }
 
   private async probeRemoteRefOid(record: WorkspaceRecord, branch: string, token?: string, signal?: AbortSignal): Promise<string | undefined> {
+    const redactor = this.getRedactor(record.id);
+    if (token) redactor.registerSecret('GITLAB_TOKEN', token);
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
     const helperName = `chm-probe-${randomBytes(6).toString('hex')}`;
     try {
@@ -1750,7 +1789,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
   private async remoteFetch(record: WorkspaceRecord, remoteRef: string | undefined, signal?: AbortSignal, historySpec = '') {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
-    const token = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
+    const token = await this.repositoryToken(record.ownerId, repositoryUrl, 'read', record.id);
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
       const fetched = await this.runGitTransferHelper(record, 'fetch', transferName, remoteRef ?? '', token, undefined, signal, historySpec);
@@ -1770,7 +1809,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const repoStr = this.extractRepositoryName(repositoryUrl);
     let token: string | undefined;
     try {
-      token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write');
+      token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write', record.id);
     } catch (err: unknown) {
       if (err instanceof HarnessError && (err.code === 'FORBIDDEN' || err.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
         throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', err.message, 403, false, {
@@ -1875,18 +1914,25 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       try {
         pushed = await this.runGitTransferHelper(record, 'push', transferName, refspec, token, expectedRemoteOid, signal);
       } catch (err: unknown) {
+        const redactor = this.getRedactor(record.id);
+        if (token) redactor.registerSecret('GITLAB_TOKEN', token);
+        if (err instanceof HarnessError) {
+          err.message = redactor.sanitizeString(err.message);
+        }
         if (err instanceof HarnessError && (err.code === 'TIMEOUT' || err.code === 'UNAVAILABLE')) {
-          throw new HarnessError('UNKNOWN_REMOTE_STATE', `Git push interrupted by timeout or transport failure (${err.message})`.slice(0, 2_000), 504, true, {
+          throw new HarnessError('UNKNOWN_REMOTE_STATE', redactor.sanitizeString(`Git push interrupted by timeout or transport failure (${err.message})`).slice(0, 2_000), 504, true, {
             expectedRemoteOid,
             resumeAction: 'reconcile_push'
           });
         }
         throw err;
       }
+      const redactor = this.getRedactor(record.id);
+      if (token) redactor.registerSecret('GITLAB_TOKEN', token);
       const response: RunnerResponse = {
         ok: true,
         message: 'Git push complete',
-        data: { output: pushed.stdout || pushed.stderr, refspec },
+        data: { output: redactor.sanitizeString(pushed.stdout || pushed.stderr), refspec },
         truncated: pushed.truncated
       };
       if (idempotencyKey) {
@@ -1894,6 +1940,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       return response;
     } catch (err: unknown) {
+      const redactor = this.getRedactor(record.id);
+      if (token) redactor.registerSecret('GITLAB_TOKEN', token);
+      if (err instanceof HarnessError) {
+        err.message = redactor.sanitizeString(err.message);
+      }
       if (err instanceof HarnessError && idempotencyKey) {
         const status: GitOperationStatus = err.code === 'UNKNOWN_REMOTE_STATE' ? 'UNKNOWN_REMOTE_STATE' : (err.code === 'CONFLICT' ? 'CONFLICT' : 'FAILED');
         this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, status, null, JSON.stringify({ message: err.message, code: err.code }), currentLocalHead);
@@ -3223,7 +3274,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
             let token: string | undefined;
             try {
-              token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write');
+              token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write', record.id);
             } catch { /* ignore if token cannot be minted */ }
             const remoteOid = await this.probeRemoteRefOid(record, branch, token, signal);
             if (remoteOid && remoteOid === existingOp.localCommitSha) {
@@ -3834,9 +3885,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
    * credentials are preferred for GitHub hosts; the operator-supplied GitHub
    * fallback is used only when no App token can be minted.
    */
-  private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write'): Promise<string | undefined> {
+  private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write', workspaceId?: string): Promise<string | undefined> {
     if (isConfiguredGitLabRepository(this.config, repositoryUrl)) {
-      return resolveGitLabRepositoryToken(this.config, repositoryUrl);
+      const token = resolveGitLabRepositoryToken(this.config, repositoryUrl);
+      if (token && workspaceId) {
+        const redactor = this.getRedactor(workspaceId);
+        redactor.registerSecret('GITLAB_TOKEN', token);
+      }
+      return token;
     }
     const fallback = () => resolveGitHubFallbackToken({
       config: this.config,
